@@ -1,0 +1,496 @@
+// =============================================================================
+// prisma/schema.prisma
+// Chat IA — Sistema hoja del ecosistema SaaS multi-tenant
+//
+// CAMBIOS vs versión anterior:
+//   • Organization: @id sin @default(cuid()) — el ID lo asigna el owner-dashboard
+//   • Organization: se agrega slug + isActive para referencia local
+//   • Agent: se agrega roles String[] y email unique para upsert SSO
+//   • Todo lo demás sin cambios
+//
+// MIGRACIÓN: pnpm prisma migrate dev --name sso_ecosystem_contract
+// =============================================================================
+
+generator client {
+  provider   = "prisma-client-js"
+  output     = "../node_modules/.prisma/client"
+  engineType = "client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────
+
+enum ChannelType {
+  WHATSAPP
+  INSTAGRAM
+  MESSENGER
+  TIKTOK
+}
+
+enum ConversationStatus {
+  OPEN
+  HUMAN_TAKEOVER
+  RESOLVED
+  EXPIRED
+}
+
+enum ConversationStage {
+  INITIAL
+  QUALIFYING
+  INFORMED
+  NEGOTIATING
+  CLOSING
+  FOLLOW_UP
+  HUMAN
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  AUDIO
+  VIDEO
+  DOCUMENT
+  STICKER
+  LOCATION
+  TEMPLATE
+  SYSTEM
+}
+
+enum ContactStatus {
+  ACTIVE
+  BLOCKED
+  UNSUBSCRIBED
+}
+
+enum KbDocumentStatus {
+  PENDING
+  PROCESSING
+  INDEXED
+  FAILED
+}
+
+enum KbSourceType {
+  TEXT
+  MARKDOWN
+  PDF
+  URL
+  JSON
+}
+
+enum NotificationType {
+  NEW_CONVERSATION
+  NEW_MESSAGE
+  ESCALATION
+}
+
+// ─────────────────────────────────────────────
+// ORGANIZACIÓN
+// Referencia ligera — source of truth es el owner-dashboard.
+// El ID viene del dashboard (UUID externo), no se genera localmente.
+// Se crea/actualiza automáticamente en cada request via TenantGuard (upsert pasivo).
+// ─────────────────────────────────────────────
+
+model Organization {
+  id        String   @id  // UUID del owner-dashboard — NO @default(cuid())
+  name      String
+  slug      String?  @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  channelAccounts ChannelAccount[]
+  contacts        Contact[]
+  agents          Agent[]
+  projects        Project[]
+
+  @@index([slug])
+}
+
+// ─────────────────────────────────────────────
+// AGENTE (usuario del dashboard con acceso a Chat IA)
+// Se crea/actualiza via upsert en TenantGuard en cada login.
+// Los roles se cachean desde productPermissions del owner-dashboard.
+// ─────────────────────────────────────────────
+
+model Agent {
+  id             String   @id @default(cuid())
+  organizationId String
+  firebaseUid    String   @unique
+  name           String
+  email          String   @unique  // agregado para upsert por email
+  avatarUrl      String?
+  roles          String[] @default(["agent"])  // cacheado desde owner-dashboard
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization   @relation(fields: [organizationId], references: [id])
+  conversations  Conversation[]
+  notifications  Notification[]
+
+  @@index([organizationId])
+}
+
+// ─────────────────────────────────────────────
+// PROYECTO (agrupa configuraciones de IA)
+// ─────────────────────────────────────────────
+
+model Project {
+  id             String   @id @default(cuid())
+  organizationId String
+  slug           String
+  name           String
+  description    String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization     Organization      @relation(fields: [organizationId], references: [id])
+  assistantConfigs AssistantConfig[]
+  knowledgeBases   KnowledgeBase[]
+  channelAccounts  ChannelAccount[]
+
+  @@unique([organizationId, slug])
+  @@index([organizationId])
+}
+
+// ─────────────────────────────────────────────
+// CANAL (multi-canal: WhatsApp, IG, Messenger, TikTok)
+// ─────────────────────────────────────────────
+
+model ChannelAccount {
+  id             String      @id @default(cuid())
+  organizationId String
+  channelType    ChannelType
+  name           String
+
+  externalId         String
+  accessToken        String
+  extraConfig        Json    @default("{}")
+  webhookVerifyToken String  @default(cuid())
+  isActive           Boolean @default(true)
+
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization  Organization   @relation(fields: [organizationId], references: [id])
+  conversations Conversation[]
+  aiConfig      AiConfig?
+
+  @@unique([channelType, externalId])
+  @@index([organizationId])
+}
+
+// ─────────────────────────────────────────────
+// CONTACTO
+// ─────────────────────────────────────────────
+
+model Contact {
+  id             String        @id @default(cuid())
+  organizationId String
+  channelType    ChannelType
+  externalId     String
+
+  name       String?
+  avatarUrl  String?
+  email      String?
+  phone      String?
+  username   String?
+
+  status    ContactStatus @default(ACTIVE)
+  optedOut  Boolean       @default(false)
+  tags      String[]      @default([])
+  metadata  Json          @default("{}")
+
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  organization  Organization   @relation(fields: [organizationId], references: [id])
+  conversations Conversation[]
+
+  @@unique([organizationId, channelType, externalId])
+  @@index([organizationId])
+}
+
+// ─────────────────────────────────────────────
+// CONVERSACIÓN
+// ─────────────────────────────────────────────
+
+model Conversation {
+  id               String             @id @default(cuid())
+  channelAccountId String
+  contactId        String
+
+  status          ConversationStatus @default(OPEN)
+  stage           ConversationStage  @default(INITIAL)
+  isAiActive      Boolean            @default(true)
+  assignedAgentId String?
+
+  detectedIntent    String?
+  extractedEntities Json    @default("{}")
+  summary           String?
+  tags              String[] @default([])
+
+  lastMessageAt DateTime?
+  resolvedAt    DateTime?
+  deletedAt     DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  channelAccount ChannelAccount @relation(fields: [channelAccountId], references: [id])
+  contact        Contact        @relation(fields: [contactId], references: [id])
+  assignedAgent  Agent?         @relation(fields: [assignedAgentId], references: [id])
+  messages       Message[]
+  agentState     AgentState?
+  notifications  Notification[]
+
+  @@index([channelAccountId])
+  @@index([contactId])
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────
+// MENSAJE
+// ─────────────────────────────────────────────
+
+model Message {
+  id             String           @id @default(cuid())
+  conversationId String
+
+  direction    MessageDirection
+  type         MessageType      @default(TEXT)
+  status       MessageStatus    @default(SENT)
+  content      String
+  mediaUrl     String?
+  mediaCaption String?
+
+  isAiGenerated Boolean @default(false)
+  tokensUsed    Int?
+  modelUsed     String?
+  externalId    String?
+  metadata      Json    @default("{}")
+
+  createdAt DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+
+  @@unique([conversationId, externalId])
+  @@index([conversationId])
+}
+
+// ─────────────────────────────────────────────
+// ESTADO LANGGRAPH
+// ─────────────────────────────────────────────
+
+model AgentState {
+  id             String       @id @default(cuid())
+  conversationId String       @unique
+  currentNode    String       @default("classify")
+  context        Json         @default("{}")
+  updatedAt      DateTime     @updatedAt
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+}
+
+// ─────────────────────────────────────────────
+// CONFIGURACIÓN DE IA (por canal)
+// ─────────────────────────────────────────────
+
+model AiConfig {
+  id               String @id @default(cuid())
+  channelAccountId String @unique
+
+  systemPrompt      String  @default("")
+  personaName       String  @default("Asistente")
+  groqModel         String  @default("llama-3.3-70b-versatile")
+  temperature       Float   @default(0.7)
+  maxTokens         Int     @default(1024)
+  contextWindowSize Int     @default(10)
+
+  humanTakeoverKeywords String[] @default([])
+  autoResolveAfterHours Int      @default(24)
+
+  welcomeMessage String?
+  offlineMessage String?
+  isEnabled      Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  channelAccount ChannelAccount @relation(fields: [channelAccountId], references: [id])
+}
+
+// ─────────────────────────────────────────────
+// NOTIFICACIONES
+// ─────────────────────────────────────────────
+
+model Notification {
+  id             String           @id @default(cuid())
+  organizationId String
+  agentId        String
+  conversationId String?
+  type           NotificationType
+  title          String
+  body           String
+  isRead         Boolean          @default(false)
+  createdAt      DateTime         @default(now())
+
+  agent        Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([agentId])
+  @@index([organizationId])
+  @@index([isRead])
+}
+
+// ─────────────────────────────────────────────
+// ASISTENTE — configuración por proyecto
+// ─────────────────────────────────────────────
+
+model AssistantConfig {
+  id             String @id @default(cuid())
+  projectId      String @unique
+  organizationId String
+
+  personaName     String  @default("Asistente")
+  systemPrompt    String  @default("")
+  groqModel       String  @default("llama-3.3-70b-versatile")
+  temperature     Float   @default(0.7)
+  maxTokens       Int     @default(1024)
+  contextWindow   Int     @default(10)
+  welcomeMessage  String?
+  fallbackMessage String?
+  allowedOrigins  String[] @default([])
+
+  useFaqFallback Boolean @default(false)
+  faqKbId        String?
+
+  isEnabled Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project  Project            @relation(fields: [projectId], references: [id])
+  sessions AssistantSession[]
+
+  @@index([organizationId])
+}
+
+// ─────────────────────────────────────────────
+// ASISTENTE — sesiones de usuario final
+// ─────────────────────────────────────────────
+
+model AssistantSession {
+  id                String @id @default(cuid())
+  assistantConfigId String
+  organizationId    String
+  externalUserId    String
+  channel           String @default("api")
+
+  history       Json      @default("[]")
+  metadata      Json      @default("{}")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  lastMessageAt DateTime?
+
+  config AssistantConfig @relation(fields: [assistantConfigId], references: [id])
+
+  @@index([assistantConfigId])
+  @@index([organizationId, externalUserId])
+}
+
+// ─────────────────────────────────────────────
+// FAQ — base de conocimiento por proyecto
+// ─────────────────────────────────────────────
+
+model KnowledgeBase {
+  id             String  @id @default(cuid())
+  projectId      String
+  organizationId String
+  name           String
+  description    String?
+  isActive       Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project   Project      @relation(fields: [projectId], references: [id])
+  documents KbDocument[]
+
+  @@index([projectId])
+  @@index([organizationId])
+}
+
+// ─────────────────────────────────────────────
+// FAQ — documentos indexables
+// ─────────────────────────────────────────────
+
+model KbDocument {
+  id              String           @id @default(cuid())
+  knowledgeBaseId String
+  organizationId  String
+
+  title        String
+  sourceType   KbSourceType     @default(TEXT)
+  sourceUrl    String?
+  rawContent   String?
+  status       KbDocumentStatus @default(PENDING)
+  errorMessage String?
+
+  tags       String[] @default([])
+  metadata   Json     @default("{}")
+  chunkCount Int      @default(0)
+
+  indexedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  knowledgeBase KnowledgeBase @relation(fields: [knowledgeBaseId], references: [id])
+  chunks        KbChunk[]
+
+  @@index([knowledgeBaseId])
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────
+// FAQ — chunks con embeddings
+// MVP: JSON array de floats
+// Producción: migrar a Unsupported("vector(1536)") con pgvector
+// ─────────────────────────────────────────────
+
+model KbChunk {
+  id         String @id @default(cuid())
+  documentId String
+  content    String
+  chunkIndex Int
+
+  embedding Json?
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  document KbDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+}

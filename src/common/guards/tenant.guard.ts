@@ -1,0 +1,174 @@
+// src/common/guards/tenant.guard.ts
+import {
+  Injectable,
+  CanActivate,
+  ExecutionContext,
+  UnauthorizedException,
+  ForbiddenException,
+  Logger,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { FirebaseService } from '../../firebase/firebase.service';
+import { DashboardAuthService } from '../services/dashboard-auth.service';
+import { OrganizationsService } from '../../organizations/organizations.service';
+import type { TenantContext } from '../types/tenant-context';
+
+const PRODUCT_KEY = 'chat';
+
+@Injectable()
+export class TenantGuard implements CanActivate {
+  private readonly logger = new Logger(TenantGuard.name);
+
+  constructor(
+    private readonly firebase: FirebaseService,
+    private readonly dashboardAuth: DashboardAuthService,
+    private readonly organizations: OrganizationsService,
+    private readonly config: ConfigService,
+  ) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const request = context.switchToHttp().getRequest();
+    const authHeader = request.headers['authorization'] as string | undefined;
+    const orgHeader = request.headers['x-organization-id'] as string | undefined;
+    const isDev = this.config.get('NODE_ENV') !== 'production';
+
+    // ── Modo desarrollo: sin Firebase configurado ────────────────────────────
+    if (!this.firebase.isInitialized) {
+      if (!isDev) {
+        throw new UnauthorizedException('Firebase no configurado en producción');
+      }
+      if (!orgHeader) {
+        throw new UnauthorizedException('x-organization-id requerido (modo dev)');
+      }
+      this.logger.warn(`[DEV] Usando modo sin Firebase — org: ${orgHeader}`);
+      request.tenant = {
+        organizationId: orgHeader,
+        organizationName: 'Dev Organization',
+        firebaseUid: 'dev-uid',
+        email: 'dev@localhost',
+        name: 'Dev User',
+        roles: ['admin'],
+        canRead: true,
+        canWrite: true,
+      } satisfies TenantContext;
+      return true;
+    }
+
+    // ── Verificación del Bearer token ────────────────────────────────────────
+    if (!authHeader?.startsWith('Bearer ')) {
+      // Fallback dev con header (solo desarrollo)
+      if (isDev && orgHeader) {
+        this.logger.warn('[DEV] Sin Bearer token — usando x-organization-id');
+        request.tenant = {
+          organizationId: orgHeader,
+          organizationName: 'Dev Organization',
+          firebaseUid: 'dev-uid',
+          email: 'dev@localhost',
+          name: 'Dev User',
+          roles: ['admin'],
+          canRead: true,
+          canWrite: true,
+        } satisfies TenantContext;
+        return true;
+      }
+      throw new UnauthorizedException('Authorization Bearer requerido');
+    }
+
+    const token = authHeader.slice(7);
+
+    // ── 1. Verificar token Firebase ──────────────────────────────────────────
+    let decoded: { uid: string };
+    try {
+      decoded = await this.firebase.verifyIdToken(token);
+    } catch {
+      throw new UnauthorizedException('Token Firebase inválido o expirado');
+    }
+
+    // ── 2. Obtener perfil del owner-dashboard ────────────────────────────────
+    let dashboardUser;
+    try {
+      dashboardUser = await this.dashboardAuth.getMe(token, decoded.uid);
+    } catch (err) {
+      this.logger.warn(`Dashboard no disponible: ${err} — usando fallback local`);
+      // Fallback: buscar Agent local si el dashboard no responde
+      return this.fallbackToLocalAgent(request, decoded.uid, orgHeader);
+    }
+
+    // ── 3. Verificar que el usuario pertenece a la org del header ────────────
+    const requestedOrgId = orgHeader;
+    if (!requestedOrgId) {
+      throw new UnauthorizedException('Header x-organization-id requerido');
+    }
+
+    const membership = dashboardUser.organizations.find(
+      (o) => o.id === requestedOrgId,
+    );
+    if (!membership) {
+      throw new ForbiddenException(
+        `El usuario no pertenece a la organización ${requestedOrgId}`,
+      );
+    }
+
+    // ── 4. Verificar productPermissions["chat"] ──────────────────────────────
+    const chatPerms = dashboardUser.productPermissions?.[PRODUCT_KEY];
+    if (!chatPerms?.canRead) {
+      throw new ForbiddenException(
+        `Sin acceso al sistema "${PRODUCT_KEY}" para esta organización`,
+      );
+    }
+
+    // ── 5. Upsert pasivo de Organization y Agent locales ─────────────────────
+    await this.organizations.ensureExists(membership.id, membership.name, membership.slug);
+
+    // Roles: prioridad al role del membership, luego al claim de Firebase
+    const roles = [membership.role].filter(Boolean);
+
+    // ── 6. Poblar request.tenant ─────────────────────────────────────────────
+    request.tenant = {
+      organizationId: membership.id,
+      organizationName: membership.name,
+      firebaseUid: decoded.uid,
+      email: dashboardUser.email,
+      name: dashboardUser.name ?? dashboardUser.email,
+      roles,
+      canRead: chatPerms.canRead,
+      canWrite: chatPerms.canWrite,
+    } satisfies TenantContext;
+
+    return true;
+  }
+
+  // Fallback cuando el dashboard no está disponible: usar Agent local
+  private async fallbackToLocalAgent(
+    request: any,
+    uid: string,
+    orgHeader?: string,
+  ): Promise<boolean> {
+    this.logger.warn(`[FALLBACK] Usando Agent local para uid: ${uid}`);
+
+    // No podemos inyectar Prisma aquí directamente sin romper el DI,
+    // así que si el dashboard no responde, rechazamos en producción
+    // pero en dev permitimos continuar con el header.
+    const isDev = this.config.get('NODE_ENV') !== 'production';
+    if (!isDev) {
+      throw new UnauthorizedException('Servicio de autenticación no disponible');
+    }
+
+    if (!orgHeader) {
+      throw new UnauthorizedException('x-organization-id requerido');
+    }
+
+    request.tenant = {
+      organizationId: orgHeader,
+      organizationName: 'Fallback Organization',
+      firebaseUid: uid,
+      email: `${uid}@fallback`,
+      name: 'Fallback User',
+      roles: ['agent'],
+      canRead: true,
+      canWrite: false,
+    } satisfies TenantContext;
+
+    return true;
+  }
+}

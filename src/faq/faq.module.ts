@@ -1,0 +1,42 @@
+// src/faq/faq.module.ts
+import { Module } from '@nestjs/common';
+import { BullModule } from '@nestjs/bullmq';
+import { FaqController } from './faq.controller';
+import { KnowledgeBaseService } from './knowledge-base/knowledge-base.service';
+import { KbDocumentService } from './document/kb-document.service';
+import { FaqIngestionService } from './ingestion/faq-ingestion.service';
+import { FaqIngestionProcessor } from './ingestion/faq-ingestion.processor';
+import { FaqQueryService } from './query/faq-query.service';
+import { RagService } from './rag/rag.service';
+import { EmbeddingService } from '../common/services/embedding.service';
+import { CacheService } from '../common/services/cache.service';
+import { GroqModule } from '../groq/groq.module';
+import { QUEUES } from '../queue/queue.constants';
+
+@Module({
+  imports: [
+    GroqModule,
+    BullModule.registerQueue({
+      name: QUEUES.FAQ_INGEST,
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 3000 },
+        removeOnComplete: 100,
+        removeOnFail: 500,
+      },
+    }),
+  ],
+  controllers: [FaqController],
+  providers: [
+    KnowledgeBaseService,
+    KbDocumentService,
+    FaqIngestionService,
+    FaqIngestionProcessor,
+    FaqQueryService,
+    RagService,
+    EmbeddingService,
+    CacheService,
+  ],
+  exports: [FaqQueryService, KnowledgeBaseService, RagService],
+})
+export class FaqModule {}

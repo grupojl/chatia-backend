@@ -1,0 +1,64 @@
+# docker-compose.yml — Entorno de desarrollo local
+version: '3.9'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: chatia_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     chatia
+      POSTGRES_PASSWORD: chatia_dev
+      POSTGRES_DB:       chatia_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chatia -d chatia_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: chatia_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      target: builder      # usa la stage de build para hot-reload
+    container_name: chatia_app
+    restart: unless-stopped
+    environment:
+      NODE_ENV:      development
+      DATABASE_URL:  postgresql://chatia:chatia_dev@postgres:5432/chatia_db
+      REDIS_URL:     redis://redis:6379
+      PORT:          3000
+    env_file:
+      - .env               # para GROQ_API_KEY, META_APP_SECRET, FIREBASE_*, etc.
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules  # evita sobreescribir node_modules del container
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: pnpm start:dev
+
+volumes:
+  postgres_data:
+  redis_data:
