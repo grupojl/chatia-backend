@@ -2620,48 +2620,6 @@ export class AssistantController {
 }
 ```
 
-## File: src/assistant/assistant.module.ts
-```typescript
-// src/assistant/assistant.module.ts
-import { Module } from '@nestjs/common';
-import { BullModule } from '@nestjs/bullmq';
-import { AssistantController } from './assistant.controller';
-import { AssistantChatService } from './chat/assistant-chat.service';
-import { AssistantConfigService } from './config/assistant-config.service';
-import { AssistantSessionService } from './session/assistant-session.service';
-import { AssistantChatProcessor } from './processors/assistant-chat.processor';
-import { GroqModule } from '../groq/groq.module';
-import { EventsModule } from '../events/events.module';
-import { FaqModule } from '../faq/faq.module';
-import { QUEUES } from '../queue/queue.constants';
-
-@Module({
-  imports: [
-    GroqModule,
-    EventsModule,
-    FaqModule,
-    BullModule.registerQueue({
-      name: QUEUES.ASSISTANT_CHAT,
-      defaultJobOptions: {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 2000 },
-        removeOnComplete: 100,
-        removeOnFail: 200,
-      },
-    }),
-  ],
-  controllers: [AssistantController],
-  providers: [
-    AssistantChatService,
-    AssistantConfigService,
-    AssistantSessionService,
-    AssistantChatProcessor,
-  ],
-  exports: [AssistantChatService, AssistantConfigService, AssistantSessionService],
-})
-export class AssistantModule {}
-```
-
 ## File: src/channel-accounts/channel-accounts.controller.ts
 ```typescript
 // src/channel-accounts/channel-accounts.controller.ts
@@ -3877,74 +3835,6 @@ export interface DashboardUser {
 }
 ```
 
-## File: src/common/services/cache.service.ts
-```typescript
-// src/common/services/cache.service.ts
-import { Injectable, Logger } from '@nestjs/common';
-import { createClient, RedisClientType } from 'redis';
-
-@Injectable()
-export class CacheService {
-  private readonly logger = new Logger(CacheService.name);
-  private client: RedisClientType | null = null;
-  private connected = false;
-
-  async onModuleInit() {
-    try {
-      this.client = createClient({ url: process.env.REDIS_URL ?? 'redis://localhost:6379' }) as RedisClientType;
-      this.client.on('error', (err) => this.logger.warn(`Redis error: ${err}`));
-      await this.client.connect();
-      this.connected = true;
-      this.logger.log('Cache Redis conectado');
-    } catch (err) {
-      this.logger.warn(`Cache Redis no disponible — funcionando sin cache: ${err}`);
-    }
-  }
-
-  async onModuleDestroy() {
-    if (this.client && this.connected) await this.client.disconnect();
-  }
-
-  async get<T>(key: string): Promise<T | null> {
-    if (!this.connected || !this.client) return null;
-    try {
-      const val = await this.client.get(key);
-      return val ? (JSON.parse(val) as T) : null;
-    } catch {
-      return null;
-    }
-  }
-
-  async set(key: string, value: unknown, ttlSeconds = 3600): Promise<void> {
-    if (!this.connected || !this.client) return;
-    try {
-      await this.client.set(key, JSON.stringify(value), { EX: ttlSeconds });
-    } catch (err) {
-      this.logger.warn(`Cache set falló: ${err}`);
-    }
-  }
-
-  async del(pattern: string): Promise<void> {
-    if (!this.connected || !this.client) return;
-    try {
-      const keys = await this.client.keys(pattern);
-      if (keys.length) await this.client.del(keys);
-    } catch (err) {
-      this.logger.warn(`Cache del falló: ${err}`);
-    }
-  }
-
-  buildFaqKey(kbId: string, question: string): string {
-    // Hash simple para la key
-    let hash = 0;
-    for (let i = 0; i < question.length; i++) {
-      hash = ((hash << 5) - hash + question.charCodeAt(i)) | 0;
-    }
-    return `faq:${kbId}:${Math.abs(hash)}`;
-  }
-}
-```
-
 ## File: src/common/services/dashboard-auth.service.ts
 ```typescript
 // src/common/services/dashboard-auth.service.ts
@@ -4102,23 +3992,6 @@ export interface TenantContext {
   canRead: boolean;
   canWrite: boolean;
 }
-```
-
-## File: src/common/common.module.ts
-```typescript
-// src/common/common.module.ts
-// Módulo que exporta servicios comunes utilizados por guards y módulos de negocio.
-import { Global, Module } from '@nestjs/common';
-import { DashboardAuthService } from './services/dashboard-auth.service';
-import { EmbeddingService } from './services/embedding.service';
-import { CacheService } from './services/cache.service';
-
-@Global()
-@Module({
-  providers: [DashboardAuthService, EmbeddingService, CacheService],
-  exports: [DashboardAuthService, EmbeddingService, CacheService],
-})
-export class CommonModule {}
 ```
 
 ## File: src/config/app.config.ts
@@ -4492,38 +4365,6 @@ export class ConversationsController {
     return this.svc.removeTag(id, t.organizationId, tag);
   }
 }
-```
-
-## File: src/conversations/conversations.module.ts
-```typescript
-// src/conversations/conversations.module.ts
-import { Module } from '@nestjs/common';
-import { BullModule } from '@nestjs/bullmq';
-import { ConversationsController } from './conversations.controller';
-import { ConversationsService } from './conversations.service';
-import { LangGraphModule } from '../langgraph/langgraph.module';
-import { ChannelsModule } from '../channels/channel.module';
-import { EventsModule } from '../events/events.module';
-import { AssignmentModule } from '../assignment/assignment.module';
-import { AssistantModule } from '../assistant/assistant.module';
-import { NotificationsModule } from '../notifications/notifications.module';
-import { QUEUES } from '../queue/queue.constants';
-
-@Module({
-  imports: [
-    LangGraphModule,
-    ChannelsModule,
-    EventsModule,
-    AssignmentModule,
-    NotificationsModule,
-    AssistantModule,
-    BullModule.registerQueue({ name: QUEUES.OUTGOING_MESSAGE }),
-  ],
-  controllers: [ConversationsController],
-  providers: [ConversationsService],
-  exports: [ConversationsService],
-})
-export class ConversationsModule {}
 ```
 
 ## File: src/conversations/conversations.service.ts
@@ -6272,52 +6113,6 @@ export class FaqController {
     return project;
   }
 }
-```
-
-## File: src/faq/faq.module.ts
-```typescript
-// src/faq/faq.module.ts
-import { Module } from '@nestjs/common';
-import { BullModule } from '@nestjs/bullmq';
-import { FaqController } from './faq.controller';
-import { KnowledgeBaseService } from './knowledge-base/knowledge-base.service';
-import { KbDocumentService } from './document/kb-document.service';
-import { FaqIngestionService } from './ingestion/faq-ingestion.service';
-import { FaqIngestionProcessor } from './ingestion/faq-ingestion.processor';
-import { FaqQueryService } from './query/faq-query.service';
-import { RagService } from './rag/rag.service';
-import { EmbeddingService } from '../common/services/embedding.service';
-import { CacheService } from '../common/services/cache.service';
-import { GroqModule } from '../groq/groq.module';
-import { QUEUES } from '../queue/queue.constants';
-
-@Module({
-  imports: [
-    GroqModule,
-    BullModule.registerQueue({
-      name: QUEUES.FAQ_INGEST,
-      defaultJobOptions: {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 3000 },
-        removeOnComplete: 100,
-        removeOnFail: 500,
-      },
-    }),
-  ],
-  controllers: [FaqController],
-  providers: [
-    KnowledgeBaseService,
-    KbDocumentService,
-    FaqIngestionService,
-    FaqIngestionProcessor,
-    FaqQueryService,
-    RagService,
-    EmbeddingService,
-    CacheService,
-  ],
-  exports: [FaqQueryService, KnowledgeBaseService, RagService],
-})
-export class FaqModule {}
 ```
 
 ## File: src/firebase/firebase.module.ts
@@ -8571,55 +8366,6 @@ export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
 export type JobName   = (typeof JOBS)[keyof typeof JOBS];
 ```
 
-## File: src/queue/queue.module.ts
-```typescript
-// src/queue/queue.module.ts
-import { Module } from '@nestjs/common';
-import { BullModule } from '@nestjs/bullmq';
-import { QUEUES } from './queue.constants';
-import { IncomingMessageProcessor } from './processors/incoming-message.processor';
-import { OutgoingMessageProcessor } from './processors/outgoing-message.processor';
-import { ChannelsModule } from '../channels/channel.module';
-import { ConversationsModule } from '../conversations/conversations.module';
-import { EventsModule } from '../events/events.module';
-
-@Module({
-  imports: [
-    BullModule.forRoot({
-      connection: {
-        url: process.env.REDIS_URL ?? 'redis://localhost:6379',
-      },
-    }),
-    BullModule.registerQueue(
-      {
-        name: QUEUES.INCOMING_MESSAGE,
-        defaultJobOptions: {
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 2000 },
-          removeOnComplete: 100,
-          removeOnFail: 200,
-        },
-      },
-      {
-        name: QUEUES.OUTGOING_MESSAGE,
-        defaultJobOptions: {
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 2000 },
-          removeOnComplete: 100,
-          removeOnFail: 200,
-        },
-      },
-    ),
-    ChannelsModule,
-    ConversationsModule,
-    EventsModule,
-  ],
-  providers: [IncomingMessageProcessor, OutgoingMessageProcessor],
-  exports: [BullModule],
-})
-export class QueueModule {}
-```
-
 ## File: src/webhooks/dto/create-webhook.dto.ts
 ```typescript
 export class CreateWebhookDto {}
@@ -8682,31 +8428,6 @@ export class WebhooksController {
     return { status: 'ok' };
   }
 }
-```
-
-## File: src/webhooks/webhooks.module.ts
-```typescript
-// src/webhooks/webhooks.module.ts
-import { Module } from '@nestjs/common';
-import { BullModule } from '@nestjs/bullmq';
-import { WebhooksController } from './webhooks.controller';
-import { WebhooksService } from './webhooks.service';
-import { ConversationsModule } from '../conversations/conversations.module';
-import { ChannelsModule } from '../channels/channel.module';
-import { QueueModule } from '../queue/queue.module';
-import { QUEUES } from '../queue/queue.constants';
-
-@Module({
-  imports: [
-    ConversationsModule,
-    ChannelsModule,
-    QueueModule,
-    BullModule.registerQueue({ name: QUEUES.INCOMING_MESSAGE }),
-  ],
-  controllers: [WebhooksController],
-  providers: [WebhooksService],
-})
-export class WebhooksModule {}
 ```
 
 ## File: src/webhooks/webhooks.service.ts
@@ -9261,6 +8982,131 @@ export class UpdateAiConfigDto {
 }
 ```
 
+## File: src/common/services/cache.service.ts
+```typescript
+// src/common/services/cache.service.ts
+import { Injectable, Logger } from '@nestjs/common';
+import { createClient, RedisClientType } from 'redis';
+
+@Injectable()
+export class CacheService {
+  private readonly logger = new Logger(CacheService.name);
+  private client: RedisClientType | null = null;
+  private connected = false;
+
+  async onModuleInit() {
+    try {
+      this.client = createClient({ url: process.env.REDIS_URL ?? 'redis://localhost:6379' }) as RedisClientType;
+      this.client.on('error', (err) => this.logger.warn(`Redis error: ${err}`));
+      await this.client.connect();
+      this.connected = true;
+      this.logger.log('Cache Redis conectado');
+    } catch (err) {
+      this.logger.warn(`Cache Redis no disponible — funcionando sin cache: ${err}`);
+    }
+  }
+
+  async onModuleDestroy() {
+    if (this.client && this.connected) await this.client.disconnect();
+  }
+
+  private get redisEnabled() { return process.env['REDIS_ENABLED'] === 'true'; }
+
+  async get<T>(key: string): Promise<T | null> {
+    if (!this.connected || !this.client) return null;
+    try {
+      const val = await this.client.get(key);
+      return val ? (JSON.parse(val) as T) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async set(key: string, value: unknown, ttlSeconds = 3600): Promise<void> {
+    if (!this.connected || !this.client) return;
+    try {
+      await this.client.set(key, JSON.stringify(value), { EX: ttlSeconds });
+    } catch (err) {
+      this.logger.warn(`Cache set falló: ${err}`);
+    }
+  }
+
+  async del(pattern: string): Promise<void> {
+    if (!this.connected || !this.client) return;
+    try {
+      const keys = await this.client.keys(pattern);
+      if (keys.length) await this.client.del(keys);
+    } catch (err) {
+      this.logger.warn(`Cache del falló: ${err}`);
+    }
+  }
+
+  buildFaqKey(kbId: string, question: string): string {
+    // Hash simple para la key
+    let hash = 0;
+    for (let i = 0; i < question.length; i++) {
+      hash = ((hash << 5) - hash + question.charCodeAt(i)) | 0;
+    }
+    return `faq:${kbId}:${Math.abs(hash)}`;
+  }
+}
+```
+
+## File: src/common/common.module.ts
+```typescript
+// src/common/common.module.ts
+// Módulo que exporta servicios comunes utilizados por guards y módulos de negocio.
+import { Global, Module } from '@nestjs/common';
+import { DashboardAuthService } from './services/dashboard-auth.service';
+import { EmbeddingService }     from './services/embedding.service';
+import { CacheService }         from './services/cache.service';
+import { GroqModule }           from '../groq/groq.module';
+
+@Global()
+@Module({
+  imports: [GroqModule],
+  providers: [DashboardAuthService, EmbeddingService, CacheService],
+  exports:   [DashboardAuthService, EmbeddingService, CacheService],
+})
+export class CommonModule {}
+```
+
+## File: src/conversations/conversations.module.ts
+```typescript
+// src/conversations/conversations.module.ts
+import { Module }              from '@nestjs/common';
+import { BullModule }          from '@nestjs/bullmq';
+import { ConversationsController } from './conversations.controller';
+import { ConversationsService }    from './conversations.service';
+import { LangGraphModule }     from '../langgraph/langgraph.module';
+import { ChannelsModule }      from '../channels/channel.module';
+import { EventsModule }        from '../events/events.module';
+import { AssignmentModule }    from '../assignment/assignment.module';
+import { AssistantModule }     from '../assistant/assistant.module';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { QUEUES }              from '../queue/queue.constants';
+
+const REDIS_ENABLED = process.env['REDIS_ENABLED'] === 'true';
+
+@Module({
+  imports: [
+    LangGraphModule,
+    ChannelsModule,
+    EventsModule,
+    AssignmentModule,
+    NotificationsModule,
+    AssistantModule,
+    ...(REDIS_ENABLED ? [
+      BullModule.registerQueue({ name: QUEUES.OUTGOING_MESSAGE }),
+    ] : []),
+  ],
+  controllers: [ConversationsController],
+  providers:   [ConversationsService],
+  exports:     [ConversationsService],
+})
+export class ConversationsModule {}
+```
+
 ## File: src/app.module.ts
 ```typescript
 // src/app.module.ts
@@ -9348,6 +9194,165 @@ import { TenantThrottlerGuard } from './common/guards/tenant-throttler.guard';
   ],
 })
 export class AppModule {}
+```
+
+## File: src/assistant/assistant.module.ts
+```typescript
+// src/assistant/assistant.module.ts
+import { Module }                  from '@nestjs/common';
+import { BullModule }              from '@nestjs/bullmq';
+import { AssistantController }     from './assistant.controller';
+import { AssistantChatService }    from './chat/assistant-chat.service';
+import { AssistantConfigService }  from './config/assistant-config.service';
+import { AssistantSessionService } from './session/assistant-session.service';
+import { AssistantChatProcessor }  from './processors/assistant-chat.processor';
+import { GroqModule }              from '../groq/groq.module';
+import { EventsModule }            from '../events/events.module';
+import { FaqModule }               from '../faq/faq.module';
+import { QUEUES }                  from '../queue/queue.constants';
+
+const REDIS_ENABLED = process.env['REDIS_ENABLED'] === 'true';
+
+@Module({
+  imports: [
+    GroqModule,
+    EventsModule,
+    FaqModule,
+    ...(REDIS_ENABLED ? [
+      BullModule.registerQueue({
+        name: QUEUES.ASSISTANT_CHAT,
+        defaultJobOptions: {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 2000 },
+          removeOnComplete: 100,
+          removeOnFail: 200,
+        },
+      }),
+    ] : []),
+  ],
+  controllers: [AssistantController],
+  providers: [
+    AssistantChatService,
+    AssistantConfigService,
+    AssistantSessionService,
+    ...(REDIS_ENABLED ? [AssistantChatProcessor] : []),
+  ],
+  exports: [AssistantChatService, AssistantConfigService, AssistantSessionService],
+})
+export class AssistantModule {}
+```
+
+## File: src/faq/faq.module.ts
+```typescript
+// src/faq/faq.module.ts
+import { Module }                from '@nestjs/common';
+import { BullModule }            from '@nestjs/bullmq';
+import { FaqController }         from './faq.controller';
+import { KnowledgeBaseService }  from './knowledge-base/knowledge-base.service';
+import { KbDocumentService }     from './document/kb-document.service';
+import { FaqIngestionService }   from './ingestion/faq-ingestion.service';
+import { FaqIngestionProcessor } from './ingestion/faq-ingestion.processor';
+import { FaqQueryService }       from './query/faq-query.service';
+import { RagService }            from './rag/rag.service';
+import { EmbeddingService }      from '../common/services/embedding.service';
+import { CacheService }          from '../common/services/cache.service';
+import { GroqModule }            from '../groq/groq.module';
+import { QUEUES }                from '../queue/queue.constants';
+
+const REDIS_ENABLED = process.env['REDIS_ENABLED'] === 'true';
+
+@Module({
+  imports: [
+    GroqModule,
+    ...(REDIS_ENABLED ? [
+      BullModule.registerQueue({
+        name: QUEUES.FAQ_INGEST,
+        defaultJobOptions: {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 3000 },
+          removeOnComplete: 100,
+          removeOnFail: 500,
+        },
+      }),
+    ] : []),
+  ],
+  controllers: [FaqController],
+  providers: [
+    KnowledgeBaseService,
+    KbDocumentService,
+    FaqIngestionService,
+    FaqQueryService,
+    RagService,
+    EmbeddingService,
+    CacheService,
+    ...(REDIS_ENABLED ? [FaqIngestionProcessor] : []),
+  ],
+  exports: [FaqQueryService, KnowledgeBaseService, RagService],
+})
+export class FaqModule {}
+```
+
+## File: src/webhooks/webhooks.module.ts
+```typescript
+// src/webhooks/webhooks.module.ts
+import { Module }              from '@nestjs/common';
+import { BullModule }          from '@nestjs/bullmq';
+import { WebhooksController }  from './webhooks.controller';
+import { WebhooksService }     from './webhooks.service';
+import { ConversationsModule } from '../conversations/conversations.module';
+import { ChannelsModule }      from '../channels/channel.module';
+import { QueueModule }         from '../queue/queue.module';
+import { QUEUES }              from '../queue/queue.constants';
+
+const REDIS_ENABLED = process.env['REDIS_ENABLED'] === 'true';
+
+@Module({
+  imports: [
+    ConversationsModule,
+    ChannelsModule,
+    QueueModule,
+    ...(REDIS_ENABLED ? [
+      BullModule.registerQueue({ name: QUEUES.INCOMING_MESSAGE }),
+    ] : []),
+  ],
+  controllers: [WebhooksController],
+  providers:   [WebhooksService],
+})
+export class WebhooksModule {}
+```
+
+## File: src/queue/queue.module.ts
+```typescript
+// src/queue/queue.module.ts
+import { Module }     from '@nestjs/common';
+import { BullModule } from '@nestjs/bullmq';
+import { QUEUES }     from './queue.constants';
+import { IncomingMessageProcessor } from './processors/incoming-message.processor';
+import { OutgoingMessageProcessor } from './processors/outgoing-message.processor';
+import { ChannelsModule }      from '../channels/channel.module';
+import { ConversationsModule } from '../conversations/conversations.module';
+import { EventsModule }        from '../events/events.module';
+
+const REDIS_ENABLED = process.env['REDIS_ENABLED'] === 'true';
+const REDIS_URL     = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
+
+@Module({
+  imports: [
+    ...(REDIS_ENABLED ? [
+      BullModule.forRoot({ connection: { url: REDIS_URL } }),
+      BullModule.registerQueue(
+        { name: QUEUES.INCOMING_MESSAGE, defaultJobOptions: { attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: 100, removeOnFail: 200 } },
+        { name: QUEUES.OUTGOING_MESSAGE, defaultJobOptions: { attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: 100, removeOnFail: 200 } },
+      ),
+    ] : []),
+    ChannelsModule,
+    ConversationsModule,
+    EventsModule,
+  ],
+  providers: REDIS_ENABLED ? [IncomingMessageProcessor, OutgoingMessageProcessor] : [],
+  exports:   REDIS_ENABLED ? [BullModule] : [],
+})
+export class QueueModule {}
 ```
 
 ## File: package.json
