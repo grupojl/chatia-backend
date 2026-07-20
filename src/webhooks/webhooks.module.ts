@@ -1,21 +1,25 @@
 // src/webhooks/webhooks.module.ts
-import { Module } from '@nestjs/common';
-import { BullModule } from '@nestjs/bullmq';
-import { WebhooksController } from './webhooks.controller';
-import { WebhooksService } from './webhooks.service';
+import { Module }              from '@nestjs/common';
+import { BullModule }          from '@nestjs/bullmq';
+import { WebhooksController }  from './webhooks.controller';
+import { WebhooksService }     from './webhooks.service';
 import { ConversationsModule } from '../conversations/conversations.module';
-import { ChannelsModule } from '../channels/channel.module';
-import { QueueModule } from '../queue/queue.module';
-import { QUEUES } from '../queue/queue.constants';
+import { ChannelsModule }      from '../channels/channel.module';
+import { QueueModule }         from '../queue/queue.module';
+import { QUEUES }              from '../queue/queue.constants';
+
+const REDIS_ENABLED = process.env['REDIS_ENABLED'] === 'true';
 
 @Module({
   imports: [
     ConversationsModule,
     ChannelsModule,
     QueueModule,
-    ...(REDIS_ENABLED ? [BullModule.registerQueue({ name: QUEUES.INCOMING_MESSAGE })] : []),
+    ...(REDIS_ENABLED ? [
+      BullModule.registerQueue({ name: QUEUES.INCOMING_MESSAGE }),
+    ] : []),
   ],
   controllers: [WebhooksController],
-  providers: [WebhooksService],
+  providers:   [WebhooksService],
 })
 export class WebhooksModule {}

@@ -1,40 +1,44 @@
 // src/faq/faq.module.ts
-import { Module } from '@nestjs/common';
-import { BullModule } from '@nestjs/bullmq';
-import { FaqController } from './faq.controller';
-import { KnowledgeBaseService } from './knowledge-base/knowledge-base.service';
-import { KbDocumentService } from './document/kb-document.service';
-import { FaqIngestionService } from './ingestion/faq-ingestion.service';
+import { Module }                from '@nestjs/common';
+import { BullModule }            from '@nestjs/bullmq';
+import { FaqController }         from './faq.controller';
+import { KnowledgeBaseService }  from './knowledge-base/knowledge-base.service';
+import { KbDocumentService }     from './document/kb-document.service';
+import { FaqIngestionService }   from './ingestion/faq-ingestion.service';
 import { FaqIngestionProcessor } from './ingestion/faq-ingestion.processor';
-import { FaqQueryService } from './query/faq-query.service';
-import { RagService } from './rag/rag.service';
-import { EmbeddingService } from '../common/services/embedding.service';
-import { CacheService } from '../common/services/cache.service';
-import { GroqModule } from '../groq/groq.module';
-import { QUEUES } from '../queue/queue.constants';
+import { FaqQueryService }       from './query/faq-query.service';
+import { RagService }            from './rag/rag.service';
+import { EmbeddingService }      from '../common/services/embedding.service';
+import { CacheService }          from '../common/services/cache.service';
+import { GroqModule }            from '../groq/groq.module';
+import { QUEUES }                from '../queue/queue.constants';
+
+const REDIS_ENABLED = process.env['REDIS_ENABLED'] === 'true';
 
 @Module({
   imports: [
     GroqModule,
-    ...(REDIS_ENABLED ? [BullModule.registerQueue({
-      name: QUEUES.FAQ_INGEST,
-      defaultJobOptions: {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 3000 },
-        removeOnComplete: 100,
-        removeOnFail: 500,
-      },
-    })] : []),
+    ...(REDIS_ENABLED ? [
+      BullModule.registerQueue({
+        name: QUEUES.FAQ_INGEST,
+        defaultJobOptions: {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 3000 },
+          removeOnComplete: 100,
+          removeOnFail: 500,
+        },
+      }),
+    ] : []),
   ],
   controllers: [FaqController],
   providers: [
     KnowledgeBaseService,
     KbDocumentService,
-    FaqIngestionService
+    FaqIngestionService,
     FaqQueryService,
     RagService,
     EmbeddingService,
-    CacheService,,
+    CacheService,
     ...(REDIS_ENABLED ? [FaqIngestionProcessor] : []),
   ],
   exports: [FaqQueryService, KnowledgeBaseService, RagService],
