@@ -50,10 +50,7 @@ src/
     agents.module.ts
   ai-config/
     dto/
-      create-ai-config.dto.ts
       update-ai-config.dto.ts
-    entities/
-      ai-config.entity.ts
     ai-config.controller.ts
     ai-config.module.ts
     ai-config.service.ts
@@ -247,9 +244,7 @@ src/
   widget/
     widget.controller.ts
     widget.module.ts
-  app.controller.ts
   app.module.ts
-  app.service.ts
   main.ts
 nest-cli.json
 package.json
@@ -257,866 +252,6 @@ tsconfig.json
 ```
 
 # Files
-
-## File: prisma/migrations/20260716184552_add_project_type/migration.sql
-```sql
--- =============================================================================
--- Migration: add_project_type
--- Agrega enum ProjectType al modelo Project para identificar
--- qué estrategia de módulo aplica a cada proyecto.
--- =============================================================================
-
--- CreateEnum
-CREATE TYPE "ProjectType" AS ENUM ('WELVER', 'MANZANA', 'MEXUS', 'GENERIC');
-
--- AlterTable
-ALTER TABLE "Project"
-  ADD COLUMN "projectType" "ProjectType" NOT NULL DEFAULT 'GENERIC';
-
--- Index para queries por tipo de proyecto
-CREATE INDEX "Project_projectType_idx" ON "Project"("projectType");
-```
-
-## File: src/core/strategies/generic.strategy.ts
-```typescript
-// =============================================================================
-// core/strategies/generic.strategy.ts
-// Estrategia fallback cuando el proyecto no tiene módulo específico.
-// No enriquece contexto ni ejecuta side-effects — pasa el mensaje directo al LLM.
-// =============================================================================
-
-import { Injectable }                                        from '@nestjs/common';
-import type { ProjectStrategy }                              from './project-strategy.interface';
-import { ProjectContext, ProjectType }                       from './project-context.interface';
-import type { AssistantSession }                             from '@prisma/client';
-
-@Injectable()
-export class GenericStrategy implements ProjectStrategy {
-  getProjectType(): ProjectType {
-    return ProjectType.GENERIC;
-  }
-
-  async enrichContext(
-    _message: string,
-    projectId: string,
-    organizationId: string,
-  ): Promise<ProjectContext> {
-    return {
-      businessData: {},
-      systemPromptAddons: '',
-      meta: {
-        projectType: ProjectType.GENERIC,
-        projectId,
-        organizationId,
-        enrichedAt: new Date(),
-      },
-    };
-  }
-
-  async afterResponse(
-    _response: string,
-    _context: ProjectContext,
-    _session: AssistantSession,
-  ): Promise<void> {
-    // generic no ejecuta side-effects
-  }
-}
-```
-
-## File: src/core/strategies/project-context.interface.ts
-```typescript
-// =============================================================================
-// core/strategies/project-context.interface.ts
-// Contexto enriquecido que cada estrategia de proyecto inyecta al core IA.
-// El core usa este contexto para construir el prompt y personalizar la respuesta.
-// Cada proyecto implementa ProjectStrategy y rellena los campos relevantes.
-// =============================================================================
-
-export interface ProjectContext {
-  /**
-   * Datos de negocio específicos del proyecto.
-   * Cada estrategia define su propia forma aquí.
-   * El core los serializa como contexto adicional al LLM.
-   */
-  businessData: Record<string, unknown>;
-
-  /**
-   * Instrucciones adicionales al system prompt base.
-   * La estrategia puede agregar reglas específicas del proyecto.
-   */
-  systemPromptAddons: string;
-
-  /**
-   * Metadatos de la sesión para logging y observabilidad.
-   */
-  meta: {
-    projectType: ProjectType;
-    projectId: string;
-    organizationId: string;
-    enrichedAt: Date;
-  };
-}
-
-export enum ProjectType {
-  WELVER   = 'WELVER',
-  MANZANA  = 'MANZANA',
-  MEXUS    = 'MEXUS',
-  GENERIC  = 'GENERIC', // fallback cuando no hay estrategia específica
-}
-```
-
-## File: src/core/strategies/project-strategy.interface.ts
-```typescript
-// =============================================================================
-// core/strategies/project-strategy.interface.ts
-// Contrato que cada módulo de proyecto DEBE implementar.
-//
-// enrichContext  → se llama ANTES de enviar al LLM, inyecta datos de negocio
-// afterResponse  → se llama DESPUÉS de recibir respuesta, permite side-effects
-// getProjectType → identifica el tipo para el registry
-// =============================================================================
-
-import type { ProjectContext, ProjectType } from './project-context.interface';
-import type { AssistantSession }            from '@prisma/client';
-
-export interface ProjectStrategy {
-  /**
-   * Enriquece el contexto con datos de negocio del proyecto.
-   * Se llama antes de enviar el mensaje al LLM.
-   * Si falla, debe devolver un contexto vacío — nunca romper el flujo principal.
-   */
-  enrichContext(
-    message: string,
-    projectId: string,
-    organizationId: string,
-  ): Promise<ProjectContext>;
-
-  /**
-   * Hook post-respuesta. Permite acciones como:
-   * - actualizar estado de orden
-   * - registrar métricas de negocio
-   * - disparar webhooks del proyecto
-   * Si falla, solo loguea — nunca rompe el flujo.
-   */
-  afterResponse(
-    response: string,
-    context: ProjectContext,
-    session: AssistantSession,
-  ): Promise<void>;
-
-  /**
-   * Identifica el tipo de proyecto para el registry.
-   */
-  getProjectType(): ProjectType;
-}
-```
-
-## File: src/core/strategies/project-strategy.module.ts
-```typescript
-// =============================================================================
-// core/strategies/project-strategy.module.ts
-// Módulo core que provee el registry y la estrategia genérica.
-// Los módulos de proyecto (welver, manzana, mexus) se registran
-// en sus propios módulos via onModuleInit.
-// =============================================================================
-
-import { Module }                   from '@nestjs/common';
-import { ProjectStrategyRegistry }  from './project-strategy.registry';
-import { GenericStrategy }          from './generic.strategy';
-
-@Module({
-  providers: [
-    ProjectStrategyRegistry,
-    GenericStrategy,
-  ],
-  exports: [
-    ProjectStrategyRegistry,
-  ],
-})
-export class ProjectStrategyModule {}
-```
-
-## File: src/core/strategies/project-strategy.registry.ts
-```typescript
-// =============================================================================
-// core/strategies/project-strategy.registry.ts
-// Registro central de estrategias por ProjectType.
-// El core llama siempre la misma interfaz — el registry resuelve cuál usar.
-//
-// Si no hay estrategia registrada para un tipo, devuelve GenericStrategy
-// para evitar que el core falle silenciosamente.
-// =============================================================================
-
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import type { ProjectStrategy }             from './project-strategy.interface';
-import { ProjectType }                      from './project-context.interface';
-
-@Injectable()
-export class ProjectStrategyRegistry implements OnModuleInit {
-  private readonly logger = new Logger(ProjectStrategyRegistry.name);
-  private readonly strategies = new Map<ProjectType, ProjectStrategy>();
-
-  onModuleInit(): void {
-    this.logger.log(
-      `Registry inicializado con estrategias: [${[...this.strategies.keys()].join(', ')}]`,
-    );
-  }
-
-  register(strategy: ProjectStrategy): void {
-    const type = strategy.getProjectType();
-    this.strategies.set(type, strategy);
-    this.logger.log(`Estrategia registrada: ${type}`);
-  }
-
-  get(type: ProjectType): ProjectStrategy {
-    const strategy = this.strategies.get(type);
-    if (!strategy) {
-      this.logger.warn(
-        `No hay estrategia para ProjectType "${type}" — usando GENERIC`,
-      );
-      const generic = this.strategies.get(ProjectType.GENERIC);
-      if (!generic) {
-        throw new Error(
-          `GenericStrategy no registrada. Verificar ProjectStrategyModule.`,
-        );
-      }
-      return generic;
-    }
-    return strategy;
-  }
-
-  has(type: ProjectType): boolean {
-    return this.strategies.has(type);
-  }
-}
-```
-
-## File: src/modules/manzana/dto/enrich-context.dto.ts
-```typescript
-// =============================================================================
-// modules/manzana/dto/enrich-context.dto.ts
-// DTO de entrada cuando MANZANA llama al core para enriquecer contexto.
-// TODO: agregar campos específicos del proyecto cuando se integre.
-// =============================================================================
-
-import { IsString, IsUUID, IsOptional, IsObject } from 'class-validator';
-
-export class EnrichContextDto {
-  @IsUUID()
-  projectId!: string;
-
-  @IsUUID()
-  organizationId!: string;
-
-  @IsString()
-  message!: string;
-
-  @IsOptional()
-  @IsObject()
-  // TODO: tiparlo con MANZANABusinessData cuando se conozca la forma
-  additionalContext?: Record<string, unknown>;
-}
-```
-
-## File: src/modules/manzana/types/context.ts
-```typescript
-// =============================================================================
-// modules/manzana/types/context.ts
-// Definición del contexto de negocio específico de MANZANA.
-// TODO: completar businessData con los campos reales cuando se integre el proyecto.
-// =============================================================================
-
-export interface MANZANABusinessData {
-  // TODO: agregar campos específicos de MANZANA cuando se integre
-  // Ejemplo para ecommerce: products, cart, order
-  // Ejemplo para saas: plan, flags, quotas
-  [key: string]: unknown;
-}
-```
-
-## File: src/modules/manzana/manzana.config.ts
-```typescript
-// =============================================================================
-// modules/manzana/manzana.config.ts
-// Configuración base del asistente para el proyecto MANZANA.
-// TODO: ajustar systemPrompt, stage y comportamiento cuando se integre el proyecto.
-// =============================================================================
-
-import { ConversationStage } from '@prisma/client';
-
-export const MANZANA_CONFIG = {
-  /**
-   * Prompt base del sistema para MANZANA.
-   * TODO: definir la persona, tono y reglas de negocio específicas.
-   */
-  systemPrompt: `
-    Eres un asistente de MANZANA.
-    TODO: completar con las instrucciones específicas del proyecto.
-  `.trim(),
-
-  /**
-   * Stage inicial de las conversaciones de MANZANA.
-   * TODO: ajustar según el flujo de negocio del proyecto.
-   */
-  defaultStage: ConversationStage.INITIAL,
-
-  /**
-   * Modelo LLM preferido para MANZANA.
-   * Puede sobrescribirse desde AssistantConfig en DB.
-   */
-  preferredModel: 'llama-3.3-70b-versatile',
-
-  /**
-   * Si este proyecto usa FAQ/RAG como fuente de conocimiento.
-   * TODO: activar cuando se configure la KnowledgeBase del proyecto.
-   */
-  useFaqFallback: false,
-} as const;
-```
-
-## File: src/modules/manzana/manzana.module.ts
-```typescript
-// =============================================================================
-// modules/manzana/manzana.module.ts
-// Módulo NestJS para el proyecto MANZANA.
-// Se auto-registra en el ProjectStrategyRegistry al inicializar.
-//
-// Para integrar el proyecto real:
-// 1. Agregar HttpModule o cliente gRPC del proyecto en imports
-// 2. Inyectar el cliente en MANZANAStrategy
-// 3. Completar enrichContext y afterResponse en la strategy
-// 4. Completar MANZANA_CONFIG con el prompt y configuración real
-// =============================================================================
-
-import { Module, OnModuleInit }       from '@nestjs/common';
-import { MANZANAStrategy }  from './manzana.strategy';
-import { ProjectStrategyRegistry }    from '../../core/strategies/project-strategy.registry';
-
-@Module({
-  providers: [MANZANAStrategy],
-  exports:   [MANZANAStrategy],
-})
-export class MANZANAModule implements OnModuleInit {
-  constructor(
-    private readonly strategy: MANZANAStrategy,
-    private readonly registry: ProjectStrategyRegistry,
-  ) {}
-
-  onModuleInit(): void {
-    this.registry.register(this.strategy);
-  }
-}
-```
-
-## File: src/modules/manzana/manzana.strategy.ts
-```typescript
-// =============================================================================
-// modules/manzana/manzana.strategy.ts
-// Estrategia de MANZANA — implementa ProjectStrategy.
-//
-// enrichContext → TODO: llamar a la API de MANZANA para traer contexto
-// afterResponse → TODO: implementar side-effects específicos del proyecto
-//
-// IMPORTANTE: enrichContext nunca debe romper el flujo. Si falla, loguea y
-// devuelve contexto vacío para que el core responda de todas formas.
-// =============================================================================
-
-import { Injectable, Logger }    from '@nestjs/common';
-import type { AssistantSession } from '@prisma/client';
-
-import type { ProjectStrategy }           from '../../core/strategies/project-strategy.interface';
-import { ProjectContext, ProjectType }    from '../../core/strategies/project-context.interface';
-import { MANZANA_CONFIG }        from './manzana.config';
-
-@Injectable()
-export class MANZANAStrategy implements ProjectStrategy {
-  private readonly logger = new Logger(MANZANAStrategy.name);
-
-  getProjectType(): ProjectType {
-    return ProjectType.MANZANA;
-  }
-
-  async enrichContext(
-    message: string,
-    projectId: string,
-    organizationId: string,
-  ): Promise<ProjectContext> {
-    try {
-      // TODO: llamar a la API de MANZANA para enriquecer el contexto
-      // Ejemplo:
-      // const data = await this.manzanaClient.getContextForMessage(message, projectId);
-
-      return {
-        businessData: {
-          // TODO: mapear datos de MANZANA aquí
-        },
-        systemPromptAddons: MANZANA_CONFIG.systemPrompt,
-        meta: {
-          projectType: ProjectType.MANZANA,
-          projectId,
-          organizationId,
-          enrichedAt: new Date(),
-        },
-      };
-    } catch (error) {
-      // enrichContext nunca rompe el flujo — devuelve contexto vacío
-      this.logger.error(
-        `Error enriqueciendo contexto MANZANA: ${(error as Error).message}`,
-      );
-      return {
-        businessData: {},
-        systemPromptAddons: '',
-        meta: {
-          projectType: ProjectType.MANZANA,
-          projectId,
-          organizationId,
-          enrichedAt: new Date(),
-        },
-      };
-    }
-  }
-
-  async afterResponse(
-    response: string,
-    context: ProjectContext,
-    _session: AssistantSession,
-  ): Promise<void> {
-    try {
-      // TODO: implementar side-effects específicos de MANZANA
-      // Ejemplo:
-      // - actualizar estado de orden
-      // - registrar métricas de negocio
-      // - disparar webhooks del proyecto
-      this.logger.debug(
-        `afterResponse MANZANA — projectId: ${context.meta.projectId}`,
-      );
-    } catch (error) {
-      // afterResponse nunca rompe el flujo — solo loguea
-      this.logger.error(
-        `Error en afterResponse MANZANA: ${(error as Error).message}`,
-      );
-    }
-  }
-}
-```
-
-## File: src/modules/mexus/dto/enrich-context.dto.ts
-```typescript
-// =============================================================================
-// modules/mexus/dto/enrich-context.dto.ts
-// DTO de entrada cuando MEXUS llama al core para enriquecer contexto.
-// TODO: agregar campos específicos del proyecto cuando se integre.
-// =============================================================================
-
-import { IsString, IsUUID, IsOptional, IsObject } from 'class-validator';
-
-export class EnrichContextDto {
-  @IsUUID()
-  projectId!: string;
-
-  @IsUUID()
-  organizationId!: string;
-
-  @IsString()
-  message!: string;
-
-  @IsOptional()
-  @IsObject()
-  // TODO: tiparlo con MEXUSBusinessData cuando se conozca la forma
-  additionalContext?: Record<string, unknown>;
-}
-```
-
-## File: src/modules/mexus/types/context.ts
-```typescript
-// =============================================================================
-// modules/mexus/types/context.ts
-// Definición del contexto de negocio específico de MEXUS.
-// TODO: completar businessData con los campos reales cuando se integre el proyecto.
-// =============================================================================
-
-export interface MEXUSBusinessData {
-  // TODO: agregar campos específicos de MEXUS cuando se integre
-  // Ejemplo para ecommerce: products, cart, order
-  // Ejemplo para saas: plan, flags, quotas
-  [key: string]: unknown;
-}
-```
-
-## File: src/modules/mexus/mexus.config.ts
-```typescript
-// =============================================================================
-// modules/mexus/mexus.config.ts
-// Configuración base del asistente para el proyecto MEXUS.
-// TODO: ajustar systemPrompt, stage y comportamiento cuando se integre el proyecto.
-// =============================================================================
-
-import { ConversationStage } from '@prisma/client';
-
-export const MEXUS_CONFIG = {
-  /**
-   * Prompt base del sistema para MEXUS.
-   * TODO: definir la persona, tono y reglas de negocio específicas.
-   */
-  systemPrompt: `
-    Eres un asistente de MEXUS.
-    TODO: completar con las instrucciones específicas del proyecto.
-  `.trim(),
-
-  /**
-   * Stage inicial de las conversaciones de MEXUS.
-   * TODO: ajustar según el flujo de negocio del proyecto.
-   */
-  defaultStage: ConversationStage.INITIAL,
-
-  /**
-   * Modelo LLM preferido para MEXUS.
-   * Puede sobrescribirse desde AssistantConfig en DB.
-   */
-  preferredModel: 'llama-3.3-70b-versatile',
-
-  /**
-   * Si este proyecto usa FAQ/RAG como fuente de conocimiento.
-   * TODO: activar cuando se configure la KnowledgeBase del proyecto.
-   */
-  useFaqFallback: false,
-} as const;
-```
-
-## File: src/modules/mexus/mexus.module.ts
-```typescript
-// =============================================================================
-// modules/mexus/mexus.module.ts
-// Módulo NestJS para el proyecto MEXUS.
-// Se auto-registra en el ProjectStrategyRegistry al inicializar.
-//
-// Para integrar el proyecto real:
-// 1. Agregar HttpModule o cliente gRPC del proyecto en imports
-// 2. Inyectar el cliente en MEXUSStrategy
-// 3. Completar enrichContext y afterResponse en la strategy
-// 4. Completar MEXUS_CONFIG con el prompt y configuración real
-// =============================================================================
-
-import { Module, OnModuleInit }       from '@nestjs/common';
-import { MEXUSStrategy }  from './mexus.strategy';
-import { ProjectStrategyRegistry }    from '../../core/strategies/project-strategy.registry';
-
-@Module({
-  providers: [MEXUSStrategy],
-  exports:   [MEXUSStrategy],
-})
-export class MEXUSModule implements OnModuleInit {
-  constructor(
-    private readonly strategy: MEXUSStrategy,
-    private readonly registry: ProjectStrategyRegistry,
-  ) {}
-
-  onModuleInit(): void {
-    this.registry.register(this.strategy);
-  }
-}
-```
-
-## File: src/modules/mexus/mexus.strategy.ts
-```typescript
-// =============================================================================
-// modules/mexus/mexus.strategy.ts
-// Estrategia de MEXUS — implementa ProjectStrategy.
-//
-// enrichContext → TODO: llamar a la API de MEXUS para traer contexto
-// afterResponse → TODO: implementar side-effects específicos del proyecto
-//
-// IMPORTANTE: enrichContext nunca debe romper el flujo. Si falla, loguea y
-// devuelve contexto vacío para que el core responda de todas formas.
-// =============================================================================
-
-import { Injectable, Logger }    from '@nestjs/common';
-import type { AssistantSession } from '@prisma/client';
-
-import type { ProjectStrategy }           from '../../core/strategies/project-strategy.interface';
-import { ProjectContext, ProjectType }    from '../../core/strategies/project-context.interface';
-import { MEXUS_CONFIG }        from './mexus.config';
-
-@Injectable()
-export class MEXUSStrategy implements ProjectStrategy {
-  private readonly logger = new Logger(MEXUSStrategy.name);
-
-  getProjectType(): ProjectType {
-    return ProjectType.MEXUS;
-  }
-
-  async enrichContext(
-    message: string,
-    projectId: string,
-    organizationId: string,
-  ): Promise<ProjectContext> {
-    try {
-      // TODO: llamar a la API de MEXUS para enriquecer el contexto
-      // Ejemplo:
-      // const data = await this.mexusClient.getContextForMessage(message, projectId);
-
-      return {
-        businessData: {
-          // TODO: mapear datos de MEXUS aquí
-        },
-        systemPromptAddons: MEXUS_CONFIG.systemPrompt,
-        meta: {
-          projectType: ProjectType.MEXUS,
-          projectId,
-          organizationId,
-          enrichedAt: new Date(),
-        },
-      };
-    } catch (error) {
-      // enrichContext nunca rompe el flujo — devuelve contexto vacío
-      this.logger.error(
-        `Error enriqueciendo contexto MEXUS: ${(error as Error).message}`,
-      );
-      return {
-        businessData: {},
-        systemPromptAddons: '',
-        meta: {
-          projectType: ProjectType.MEXUS,
-          projectId,
-          organizationId,
-          enrichedAt: new Date(),
-        },
-      };
-    }
-  }
-
-  async afterResponse(
-    response: string,
-    context: ProjectContext,
-    _session: AssistantSession,
-  ): Promise<void> {
-    try {
-      // TODO: implementar side-effects específicos de MEXUS
-      // Ejemplo:
-      // - actualizar estado de orden
-      // - registrar métricas de negocio
-      // - disparar webhooks del proyecto
-      this.logger.debug(
-        `afterResponse MEXUS — projectId: ${context.meta.projectId}`,
-      );
-    } catch (error) {
-      // afterResponse nunca rompe el flujo — solo loguea
-      this.logger.error(
-        `Error en afterResponse MEXUS: ${(error as Error).message}`,
-      );
-    }
-  }
-}
-```
-
-## File: src/modules/welver/dto/enrich-context.dto.ts
-```typescript
-// =============================================================================
-// modules/welver/dto/enrich-context.dto.ts
-// DTO de entrada cuando WELVER llama al core para enriquecer contexto.
-// TODO: agregar campos específicos del proyecto cuando se integre.
-// =============================================================================
-
-import { IsString, IsUUID, IsOptional, IsObject } from 'class-validator';
-
-export class EnrichContextDto {
-  @IsUUID()
-  projectId!: string;
-
-  @IsUUID()
-  organizationId!: string;
-
-  @IsString()
-  message!: string;
-
-  @IsOptional()
-  @IsObject()
-  // TODO: tiparlo con WELVERBusinessData cuando se conozca la forma
-  additionalContext?: Record<string, unknown>;
-}
-```
-
-## File: src/modules/welver/types/context.ts
-```typescript
-// =============================================================================
-// modules/welver/types/context.ts
-// Definición del contexto de negocio específico de WELVER.
-// TODO: completar businessData con los campos reales cuando se integre el proyecto.
-// =============================================================================
-
-export interface WELVERBusinessData {
-  // TODO: agregar campos específicos de WELVER cuando se integre
-  // Ejemplo para ecommerce: products, cart, order
-  // Ejemplo para saas: plan, flags, quotas
-  [key: string]: unknown;
-}
-```
-
-## File: src/modules/welver/welver.config.ts
-```typescript
-// =============================================================================
-// modules/welver/welver.config.ts
-// Configuración base del asistente para el proyecto WELVER.
-// TODO: ajustar systemPrompt, stage y comportamiento cuando se integre el proyecto.
-// =============================================================================
-
-import { ConversationStage } from '@prisma/client';
-
-export const WELVER_CONFIG = {
-  /**
-   * Prompt base del sistema para WELVER.
-   * TODO: definir la persona, tono y reglas de negocio específicas.
-   */
-  systemPrompt: `
-    Eres un asistente de WELVER.
-    TODO: completar con las instrucciones específicas del proyecto.
-  `.trim(),
-
-  /**
-   * Stage inicial de las conversaciones de WELVER.
-   * TODO: ajustar según el flujo de negocio del proyecto.
-   */
-  defaultStage: ConversationStage.INITIAL,
-
-  /**
-   * Modelo LLM preferido para WELVER.
-   * Puede sobrescribirse desde AssistantConfig en DB.
-   */
-  preferredModel: 'llama-3.3-70b-versatile',
-
-  /**
-   * Si este proyecto usa FAQ/RAG como fuente de conocimiento.
-   * TODO: activar cuando se configure la KnowledgeBase del proyecto.
-   */
-  useFaqFallback: false,
-} as const;
-```
-
-## File: src/modules/welver/welver.module.ts
-```typescript
-// =============================================================================
-// modules/welver/welver.module.ts
-// Módulo NestJS para el proyecto WELVER.
-// Se auto-registra en el ProjectStrategyRegistry al inicializar.
-//
-// Para integrar el proyecto real:
-// 1. Agregar HttpModule o cliente gRPC del proyecto en imports
-// 2. Inyectar el cliente en WELVERStrategy
-// 3. Completar enrichContext y afterResponse en la strategy
-// 4. Completar WELVER_CONFIG con el prompt y configuración real
-// =============================================================================
-
-import { Module, OnModuleInit }       from '@nestjs/common';
-import { WELVERStrategy }  from './welver.strategy';
-import { ProjectStrategyRegistry }    from '../../core/strategies/project-strategy.registry';
-
-@Module({
-  providers: [WELVERStrategy],
-  exports:   [WELVERStrategy],
-})
-export class WELVERModule implements OnModuleInit {
-  constructor(
-    private readonly strategy: WELVERStrategy,
-    private readonly registry: ProjectStrategyRegistry,
-  ) {}
-
-  onModuleInit(): void {
-    this.registry.register(this.strategy);
-  }
-}
-```
-
-## File: src/modules/welver/welver.strategy.ts
-```typescript
-// =============================================================================
-// modules/welver/welver.strategy.ts
-// Estrategia de WELVER — implementa ProjectStrategy.
-//
-// enrichContext → TODO: llamar a la API de WELVER para traer contexto
-// afterResponse → TODO: implementar side-effects específicos del proyecto
-//
-// IMPORTANTE: enrichContext nunca debe romper el flujo. Si falla, loguea y
-// devuelve contexto vacío para que el core responda de todas formas.
-// =============================================================================
-
-import { Injectable, Logger }    from '@nestjs/common';
-import type { AssistantSession } from '@prisma/client';
-
-import type { ProjectStrategy }           from '../../core/strategies/project-strategy.interface';
-import { ProjectContext, ProjectType }    from '../../core/strategies/project-context.interface';
-import { WELVER_CONFIG }        from './welver.config';
-
-@Injectable()
-export class WELVERStrategy implements ProjectStrategy {
-  private readonly logger = new Logger(WELVERStrategy.name);
-
-  getProjectType(): ProjectType {
-    return ProjectType.WELVER;
-  }
-
-  async enrichContext(
-    message: string,
-    projectId: string,
-    organizationId: string,
-  ): Promise<ProjectContext> {
-    try {
-      // TODO: llamar a la API de WELVER para enriquecer el contexto
-      // Ejemplo:
-      // const data = await this.welverClient.getContextForMessage(message, projectId);
-
-      return {
-        businessData: {
-          // TODO: mapear datos de WELVER aquí
-        },
-        systemPromptAddons: WELVER_CONFIG.systemPrompt,
-        meta: {
-          projectType: ProjectType.WELVER,
-          projectId,
-          organizationId,
-          enrichedAt: new Date(),
-        },
-      };
-    } catch (error) {
-      // enrichContext nunca rompe el flujo — devuelve contexto vacío
-      this.logger.error(
-        `Error enriqueciendo contexto WELVER: ${(error as Error).message}`,
-      );
-      return {
-        businessData: {},
-        systemPromptAddons: '',
-        meta: {
-          projectType: ProjectType.WELVER,
-          projectId,
-          organizationId,
-          enrichedAt: new Date(),
-        },
-      };
-    }
-  }
-
-  async afterResponse(
-    response: string,
-    context: ProjectContext,
-    _session: AssistantSession,
-  ): Promise<void> {
-    try {
-      // TODO: implementar side-effects específicos de WELVER
-      // Ejemplo:
-      // - actualizar estado de orden
-      // - registrar métricas de negocio
-      // - disparar webhooks del proyecto
-      this.logger.debug(
-        `afterResponse WELVER — projectId: ${context.meta.projectId}`,
-      );
-    } catch (error) {
-      // afterResponse nunca rompe el flujo — solo loguea
-      this.logger.error(
-        `Error en afterResponse WELVER: ${(error as Error).message}`,
-      );
-    }
-  }
-}
-```
 
 ## File: prisma/migrations/20260501030506_init/migration.sql
 ```sql
@@ -1552,6 +687,25 @@ ALTER TABLE "KbDocument" ADD CONSTRAINT "KbDocument_knowledgeBaseId_fkey" FOREIG
 
 -- AddForeignKey
 ALTER TABLE "KbChunk" ADD CONSTRAINT "KbChunk_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "KbDocument"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+```
+
+## File: prisma/migrations/20260716184552_add_project_type/migration.sql
+```sql
+-- =============================================================================
+-- Migration: add_project_type
+-- Agrega enum ProjectType al modelo Project para identificar
+-- qué estrategia de módulo aplica a cada proyecto.
+-- =============================================================================
+
+-- CreateEnum
+CREATE TYPE "ProjectType" AS ENUM ('WELVER', 'MANZANA', 'MEXUS', 'GENERIC');
+
+-- AlterTable
+ALTER TABLE "Project"
+  ADD COLUMN "projectType" "ProjectType" NOT NULL DEFAULT 'GENERIC';
+
+-- Index para queries por tipo de proyecto
+CREATE INDEX "Project_projectType_idx" ON "Project"("projectType");
 ```
 
 ## File: prisma/migrations/migration_lock.toml
@@ -2220,24 +1374,6 @@ import { AgentsController } from './agents.controller';
   controllers: [AgentsController],
 })
 export class AgentsModule {}
-```
-
-## File: src/ai-config/dto/create-ai-config.dto.ts
-```typescript
-export class CreateAiConfigDto {}
-```
-
-## File: src/ai-config/dto/update-ai-config.dto.ts
-```typescript
-import { PartialType } from '@nestjs/mapped-types';
-import { CreateAiConfigDto } from './create-ai-config.dto';
-
-export class UpdateAiConfigDto extends PartialType(CreateAiConfigDto) {}
-```
-
-## File: src/ai-config/entities/ai-config.entity.ts
-```typescript
-export class AiConfig {}
 ```
 
 ## File: src/ai-config/ai-config.controller.ts
@@ -5979,6 +5115,220 @@ export class ConversationsService {
 }
 ```
 
+## File: src/core/strategies/generic.strategy.ts
+```typescript
+// =============================================================================
+// core/strategies/generic.strategy.ts
+// Estrategia fallback cuando el proyecto no tiene módulo específico.
+// No enriquece contexto ni ejecuta side-effects — pasa el mensaje directo al LLM.
+// =============================================================================
+
+import { Injectable }                                        from '@nestjs/common';
+import type { ProjectStrategy }                              from './project-strategy.interface';
+import { ProjectContext, ProjectType }                       from './project-context.interface';
+import type { AssistantSession }                             from '@prisma/client';
+
+@Injectable()
+export class GenericStrategy implements ProjectStrategy {
+  getProjectType(): ProjectType {
+    return ProjectType.GENERIC;
+  }
+
+  async enrichContext(
+    _message: string,
+    projectId: string,
+    organizationId: string,
+  ): Promise<ProjectContext> {
+    return {
+      businessData: {},
+      systemPromptAddons: '',
+      meta: {
+        projectType: ProjectType.GENERIC,
+        projectId,
+        organizationId,
+        enrichedAt: new Date(),
+      },
+    };
+  }
+
+  async afterResponse(
+    _response: string,
+    _context: ProjectContext,
+    _session: AssistantSession,
+  ): Promise<void> {
+    // generic no ejecuta side-effects
+  }
+}
+```
+
+## File: src/core/strategies/project-context.interface.ts
+```typescript
+// =============================================================================
+// core/strategies/project-context.interface.ts
+// Contexto enriquecido que cada estrategia de proyecto inyecta al core IA.
+// El core usa este contexto para construir el prompt y personalizar la respuesta.
+// Cada proyecto implementa ProjectStrategy y rellena los campos relevantes.
+// =============================================================================
+
+export interface ProjectContext {
+  /**
+   * Datos de negocio específicos del proyecto.
+   * Cada estrategia define su propia forma aquí.
+   * El core los serializa como contexto adicional al LLM.
+   */
+  businessData: Record<string, unknown>;
+
+  /**
+   * Instrucciones adicionales al system prompt base.
+   * La estrategia puede agregar reglas específicas del proyecto.
+   */
+  systemPromptAddons: string;
+
+  /**
+   * Metadatos de la sesión para logging y observabilidad.
+   */
+  meta: {
+    projectType: ProjectType;
+    projectId: string;
+    organizationId: string;
+    enrichedAt: Date;
+  };
+}
+
+export enum ProjectType {
+  WELVER   = 'WELVER',
+  MANZANA  = 'MANZANA',
+  MEXUS    = 'MEXUS',
+  GENERIC  = 'GENERIC', // fallback cuando no hay estrategia específica
+}
+```
+
+## File: src/core/strategies/project-strategy.interface.ts
+```typescript
+// =============================================================================
+// core/strategies/project-strategy.interface.ts
+// Contrato que cada módulo de proyecto DEBE implementar.
+//
+// enrichContext  → se llama ANTES de enviar al LLM, inyecta datos de negocio
+// afterResponse  → se llama DESPUÉS de recibir respuesta, permite side-effects
+// getProjectType → identifica el tipo para el registry
+// =============================================================================
+
+import type { ProjectContext, ProjectType } from './project-context.interface';
+import type { AssistantSession }            from '@prisma/client';
+
+export interface ProjectStrategy {
+  /**
+   * Enriquece el contexto con datos de negocio del proyecto.
+   * Se llama antes de enviar el mensaje al LLM.
+   * Si falla, debe devolver un contexto vacío — nunca romper el flujo principal.
+   */
+  enrichContext(
+    message: string,
+    projectId: string,
+    organizationId: string,
+  ): Promise<ProjectContext>;
+
+  /**
+   * Hook post-respuesta. Permite acciones como:
+   * - actualizar estado de orden
+   * - registrar métricas de negocio
+   * - disparar webhooks del proyecto
+   * Si falla, solo loguea — nunca rompe el flujo.
+   */
+  afterResponse(
+    response: string,
+    context: ProjectContext,
+    session: AssistantSession,
+  ): Promise<void>;
+
+  /**
+   * Identifica el tipo de proyecto para el registry.
+   */
+  getProjectType(): ProjectType;
+}
+```
+
+## File: src/core/strategies/project-strategy.module.ts
+```typescript
+// =============================================================================
+// core/strategies/project-strategy.module.ts
+// Módulo core que provee el registry y la estrategia genérica.
+// Los módulos de proyecto (welver, manzana, mexus) se registran
+// en sus propios módulos via onModuleInit.
+// =============================================================================
+
+import { Module }                   from '@nestjs/common';
+import { ProjectStrategyRegistry }  from './project-strategy.registry';
+import { GenericStrategy }          from './generic.strategy';
+
+@Module({
+  providers: [
+    ProjectStrategyRegistry,
+    GenericStrategy,
+  ],
+  exports: [
+    ProjectStrategyRegistry,
+  ],
+})
+export class ProjectStrategyModule {}
+```
+
+## File: src/core/strategies/project-strategy.registry.ts
+```typescript
+// =============================================================================
+// core/strategies/project-strategy.registry.ts
+// Registro central de estrategias por ProjectType.
+// El core llama siempre la misma interfaz — el registry resuelve cuál usar.
+//
+// Si no hay estrategia registrada para un tipo, devuelve GenericStrategy
+// para evitar que el core falle silenciosamente.
+// =============================================================================
+
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import type { ProjectStrategy }             from './project-strategy.interface';
+import { ProjectType }                      from './project-context.interface';
+
+@Injectable()
+export class ProjectStrategyRegistry implements OnModuleInit {
+  private readonly logger = new Logger(ProjectStrategyRegistry.name);
+  private readonly strategies = new Map<ProjectType, ProjectStrategy>();
+
+  onModuleInit(): void {
+    this.logger.log(
+      `Registry inicializado con estrategias: [${[...this.strategies.keys()].join(', ')}]`,
+    );
+  }
+
+  register(strategy: ProjectStrategy): void {
+    const type = strategy.getProjectType();
+    this.strategies.set(type, strategy);
+    this.logger.log(`Estrategia registrada: ${type}`);
+  }
+
+  get(type: ProjectType): ProjectStrategy {
+    const strategy = this.strategies.get(type);
+    if (!strategy) {
+      this.logger.warn(
+        `No hay estrategia para ProjectType "${type}" — usando GENERIC`,
+      );
+      const generic = this.strategies.get(ProjectType.GENERIC);
+      if (!generic) {
+        throw new Error(
+          `GenericStrategy no registrada. Verificar ProjectStrategyModule.`,
+        );
+      }
+      return generic;
+    }
+    return strategy;
+  }
+
+  has(type: ProjectType): boolean {
+    return this.strategies.has(type);
+  }
+}
+```
+
 ## File: src/events/events.gateway.ts
 ```typescript
 // src/events/events.gateway.ts
@@ -7862,6 +7212,633 @@ export class MessagesService {
 }
 ```
 
+## File: src/modules/manzana/dto/enrich-context.dto.ts
+```typescript
+// =============================================================================
+// modules/manzana/dto/enrich-context.dto.ts
+// DTO de entrada cuando MANZANA llama al core para enriquecer contexto.
+// TODO: agregar campos específicos del proyecto cuando se integre.
+// =============================================================================
+
+import { IsString, IsUUID, IsOptional, IsObject } from 'class-validator';
+
+export class EnrichContextDto {
+  @IsUUID()
+  projectId!: string;
+
+  @IsUUID()
+  organizationId!: string;
+
+  @IsString()
+  message!: string;
+
+  @IsOptional()
+  @IsObject()
+  // TODO: tiparlo con MANZANABusinessData cuando se conozca la forma
+  additionalContext?: Record<string, unknown>;
+}
+```
+
+## File: src/modules/manzana/types/context.ts
+```typescript
+// =============================================================================
+// modules/manzana/types/context.ts
+// Definición del contexto de negocio específico de MANZANA.
+// TODO: completar businessData con los campos reales cuando se integre el proyecto.
+// =============================================================================
+
+export interface MANZANABusinessData {
+  // TODO: agregar campos específicos de MANZANA cuando se integre
+  // Ejemplo para ecommerce: products, cart, order
+  // Ejemplo para saas: plan, flags, quotas
+  [key: string]: unknown;
+}
+```
+
+## File: src/modules/manzana/manzana.config.ts
+```typescript
+// =============================================================================
+// modules/manzana/manzana.config.ts
+// Configuración base del asistente para el proyecto MANZANA.
+// TODO: ajustar systemPrompt, stage y comportamiento cuando se integre el proyecto.
+// =============================================================================
+
+import { ConversationStage } from '@prisma/client';
+
+export const MANZANA_CONFIG = {
+  /**
+   * Prompt base del sistema para MANZANA.
+   * TODO: definir la persona, tono y reglas de negocio específicas.
+   */
+  systemPrompt: `
+    Eres un asistente de MANZANA.
+    TODO: completar con las instrucciones específicas del proyecto.
+  `.trim(),
+
+  /**
+   * Stage inicial de las conversaciones de MANZANA.
+   * TODO: ajustar según el flujo de negocio del proyecto.
+   */
+  defaultStage: ConversationStage.INITIAL,
+
+  /**
+   * Modelo LLM preferido para MANZANA.
+   * Puede sobrescribirse desde AssistantConfig en DB.
+   */
+  preferredModel: 'llama-3.3-70b-versatile',
+
+  /**
+   * Si este proyecto usa FAQ/RAG como fuente de conocimiento.
+   * TODO: activar cuando se configure la KnowledgeBase del proyecto.
+   */
+  useFaqFallback: false,
+} as const;
+```
+
+## File: src/modules/manzana/manzana.module.ts
+```typescript
+// =============================================================================
+// modules/manzana/manzana.module.ts
+// Módulo NestJS para el proyecto MANZANA.
+// Se auto-registra en el ProjectStrategyRegistry al inicializar.
+//
+// Para integrar el proyecto real:
+// 1. Agregar HttpModule o cliente gRPC del proyecto en imports
+// 2. Inyectar el cliente en MANZANAStrategy
+// 3. Completar enrichContext y afterResponse en la strategy
+// 4. Completar MANZANA_CONFIG con el prompt y configuración real
+// =============================================================================
+
+import { Module, OnModuleInit }       from '@nestjs/common';
+import { MANZANAStrategy }  from './manzana.strategy';
+import { ProjectStrategyRegistry }    from '../../core/strategies/project-strategy.registry';
+
+@Module({
+  providers: [MANZANAStrategy],
+  exports:   [MANZANAStrategy],
+})
+export class MANZANAModule implements OnModuleInit {
+  constructor(
+    private readonly strategy: MANZANAStrategy,
+    private readonly registry: ProjectStrategyRegistry,
+  ) {}
+
+  onModuleInit(): void {
+    this.registry.register(this.strategy);
+  }
+}
+```
+
+## File: src/modules/manzana/manzana.strategy.ts
+```typescript
+// =============================================================================
+// modules/manzana/manzana.strategy.ts
+// Estrategia de MANZANA — implementa ProjectStrategy.
+//
+// enrichContext → TODO: llamar a la API de MANZANA para traer contexto
+// afterResponse → TODO: implementar side-effects específicos del proyecto
+//
+// IMPORTANTE: enrichContext nunca debe romper el flujo. Si falla, loguea y
+// devuelve contexto vacío para que el core responda de todas formas.
+// =============================================================================
+
+import { Injectable, Logger }    from '@nestjs/common';
+import type { AssistantSession } from '@prisma/client';
+
+import type { ProjectStrategy }           from '../../core/strategies/project-strategy.interface';
+import { ProjectContext, ProjectType }    from '../../core/strategies/project-context.interface';
+import { MANZANA_CONFIG }        from './manzana.config';
+
+@Injectable()
+export class MANZANAStrategy implements ProjectStrategy {
+  private readonly logger = new Logger(MANZANAStrategy.name);
+
+  getProjectType(): ProjectType {
+    return ProjectType.MANZANA;
+  }
+
+  async enrichContext(
+    message: string,
+    projectId: string,
+    organizationId: string,
+  ): Promise<ProjectContext> {
+    try {
+      // TODO: llamar a la API de MANZANA para enriquecer el contexto
+      // Ejemplo:
+      // const data = await this.manzanaClient.getContextForMessage(message, projectId);
+
+      return {
+        businessData: {
+          // TODO: mapear datos de MANZANA aquí
+        },
+        systemPromptAddons: MANZANA_CONFIG.systemPrompt,
+        meta: {
+          projectType: ProjectType.MANZANA,
+          projectId,
+          organizationId,
+          enrichedAt: new Date(),
+        },
+      };
+    } catch (error) {
+      // enrichContext nunca rompe el flujo — devuelve contexto vacío
+      this.logger.error(
+        `Error enriqueciendo contexto MANZANA: ${(error as Error).message}`,
+      );
+      return {
+        businessData: {},
+        systemPromptAddons: '',
+        meta: {
+          projectType: ProjectType.MANZANA,
+          projectId,
+          organizationId,
+          enrichedAt: new Date(),
+        },
+      };
+    }
+  }
+
+  async afterResponse(
+    response: string,
+    context: ProjectContext,
+    _session: AssistantSession,
+  ): Promise<void> {
+    try {
+      // TODO: implementar side-effects específicos de MANZANA
+      // Ejemplo:
+      // - actualizar estado de orden
+      // - registrar métricas de negocio
+      // - disparar webhooks del proyecto
+      this.logger.debug(
+        `afterResponse MANZANA — projectId: ${context.meta.projectId}`,
+      );
+    } catch (error) {
+      // afterResponse nunca rompe el flujo — solo loguea
+      this.logger.error(
+        `Error en afterResponse MANZANA: ${(error as Error).message}`,
+      );
+    }
+  }
+}
+```
+
+## File: src/modules/mexus/dto/enrich-context.dto.ts
+```typescript
+// =============================================================================
+// modules/mexus/dto/enrich-context.dto.ts
+// DTO de entrada cuando MEXUS llama al core para enriquecer contexto.
+// TODO: agregar campos específicos del proyecto cuando se integre.
+// =============================================================================
+
+import { IsString, IsUUID, IsOptional, IsObject } from 'class-validator';
+
+export class EnrichContextDto {
+  @IsUUID()
+  projectId!: string;
+
+  @IsUUID()
+  organizationId!: string;
+
+  @IsString()
+  message!: string;
+
+  @IsOptional()
+  @IsObject()
+  // TODO: tiparlo con MEXUSBusinessData cuando se conozca la forma
+  additionalContext?: Record<string, unknown>;
+}
+```
+
+## File: src/modules/mexus/types/context.ts
+```typescript
+// =============================================================================
+// modules/mexus/types/context.ts
+// Definición del contexto de negocio específico de MEXUS.
+// TODO: completar businessData con los campos reales cuando se integre el proyecto.
+// =============================================================================
+
+export interface MEXUSBusinessData {
+  // TODO: agregar campos específicos de MEXUS cuando se integre
+  // Ejemplo para ecommerce: products, cart, order
+  // Ejemplo para saas: plan, flags, quotas
+  [key: string]: unknown;
+}
+```
+
+## File: src/modules/mexus/mexus.config.ts
+```typescript
+// =============================================================================
+// modules/mexus/mexus.config.ts
+// Configuración base del asistente para el proyecto MEXUS.
+// TODO: ajustar systemPrompt, stage y comportamiento cuando se integre el proyecto.
+// =============================================================================
+
+import { ConversationStage } from '@prisma/client';
+
+export const MEXUS_CONFIG = {
+  /**
+   * Prompt base del sistema para MEXUS.
+   * TODO: definir la persona, tono y reglas de negocio específicas.
+   */
+  systemPrompt: `
+    Eres un asistente de MEXUS.
+    TODO: completar con las instrucciones específicas del proyecto.
+  `.trim(),
+
+  /**
+   * Stage inicial de las conversaciones de MEXUS.
+   * TODO: ajustar según el flujo de negocio del proyecto.
+   */
+  defaultStage: ConversationStage.INITIAL,
+
+  /**
+   * Modelo LLM preferido para MEXUS.
+   * Puede sobrescribirse desde AssistantConfig en DB.
+   */
+  preferredModel: 'llama-3.3-70b-versatile',
+
+  /**
+   * Si este proyecto usa FAQ/RAG como fuente de conocimiento.
+   * TODO: activar cuando se configure la KnowledgeBase del proyecto.
+   */
+  useFaqFallback: false,
+} as const;
+```
+
+## File: src/modules/mexus/mexus.module.ts
+```typescript
+// =============================================================================
+// modules/mexus/mexus.module.ts
+// Módulo NestJS para el proyecto MEXUS.
+// Se auto-registra en el ProjectStrategyRegistry al inicializar.
+//
+// Para integrar el proyecto real:
+// 1. Agregar HttpModule o cliente gRPC del proyecto en imports
+// 2. Inyectar el cliente en MEXUSStrategy
+// 3. Completar enrichContext y afterResponse en la strategy
+// 4. Completar MEXUS_CONFIG con el prompt y configuración real
+// =============================================================================
+
+import { Module, OnModuleInit }       from '@nestjs/common';
+import { MEXUSStrategy }  from './mexus.strategy';
+import { ProjectStrategyRegistry }    from '../../core/strategies/project-strategy.registry';
+
+@Module({
+  providers: [MEXUSStrategy],
+  exports:   [MEXUSStrategy],
+})
+export class MEXUSModule implements OnModuleInit {
+  constructor(
+    private readonly strategy: MEXUSStrategy,
+    private readonly registry: ProjectStrategyRegistry,
+  ) {}
+
+  onModuleInit(): void {
+    this.registry.register(this.strategy);
+  }
+}
+```
+
+## File: src/modules/mexus/mexus.strategy.ts
+```typescript
+// =============================================================================
+// modules/mexus/mexus.strategy.ts
+// Estrategia de MEXUS — implementa ProjectStrategy.
+//
+// enrichContext → TODO: llamar a la API de MEXUS para traer contexto
+// afterResponse → TODO: implementar side-effects específicos del proyecto
+//
+// IMPORTANTE: enrichContext nunca debe romper el flujo. Si falla, loguea y
+// devuelve contexto vacío para que el core responda de todas formas.
+// =============================================================================
+
+import { Injectable, Logger }    from '@nestjs/common';
+import type { AssistantSession } from '@prisma/client';
+
+import type { ProjectStrategy }           from '../../core/strategies/project-strategy.interface';
+import { ProjectContext, ProjectType }    from '../../core/strategies/project-context.interface';
+import { MEXUS_CONFIG }        from './mexus.config';
+
+@Injectable()
+export class MEXUSStrategy implements ProjectStrategy {
+  private readonly logger = new Logger(MEXUSStrategy.name);
+
+  getProjectType(): ProjectType {
+    return ProjectType.MEXUS;
+  }
+
+  async enrichContext(
+    message: string,
+    projectId: string,
+    organizationId: string,
+  ): Promise<ProjectContext> {
+    try {
+      // TODO: llamar a la API de MEXUS para enriquecer el contexto
+      // Ejemplo:
+      // const data = await this.mexusClient.getContextForMessage(message, projectId);
+
+      return {
+        businessData: {
+          // TODO: mapear datos de MEXUS aquí
+        },
+        systemPromptAddons: MEXUS_CONFIG.systemPrompt,
+        meta: {
+          projectType: ProjectType.MEXUS,
+          projectId,
+          organizationId,
+          enrichedAt: new Date(),
+        },
+      };
+    } catch (error) {
+      // enrichContext nunca rompe el flujo — devuelve contexto vacío
+      this.logger.error(
+        `Error enriqueciendo contexto MEXUS: ${(error as Error).message}`,
+      );
+      return {
+        businessData: {},
+        systemPromptAddons: '',
+        meta: {
+          projectType: ProjectType.MEXUS,
+          projectId,
+          organizationId,
+          enrichedAt: new Date(),
+        },
+      };
+    }
+  }
+
+  async afterResponse(
+    response: string,
+    context: ProjectContext,
+    _session: AssistantSession,
+  ): Promise<void> {
+    try {
+      // TODO: implementar side-effects específicos de MEXUS
+      // Ejemplo:
+      // - actualizar estado de orden
+      // - registrar métricas de negocio
+      // - disparar webhooks del proyecto
+      this.logger.debug(
+        `afterResponse MEXUS — projectId: ${context.meta.projectId}`,
+      );
+    } catch (error) {
+      // afterResponse nunca rompe el flujo — solo loguea
+      this.logger.error(
+        `Error en afterResponse MEXUS: ${(error as Error).message}`,
+      );
+    }
+  }
+}
+```
+
+## File: src/modules/welver/dto/enrich-context.dto.ts
+```typescript
+// =============================================================================
+// modules/welver/dto/enrich-context.dto.ts
+// DTO de entrada cuando WELVER llama al core para enriquecer contexto.
+// TODO: agregar campos específicos del proyecto cuando se integre.
+// =============================================================================
+
+import { IsString, IsUUID, IsOptional, IsObject } from 'class-validator';
+
+export class EnrichContextDto {
+  @IsUUID()
+  projectId!: string;
+
+  @IsUUID()
+  organizationId!: string;
+
+  @IsString()
+  message!: string;
+
+  @IsOptional()
+  @IsObject()
+  // TODO: tiparlo con WELVERBusinessData cuando se conozca la forma
+  additionalContext?: Record<string, unknown>;
+}
+```
+
+## File: src/modules/welver/types/context.ts
+```typescript
+// =============================================================================
+// modules/welver/types/context.ts
+// Definición del contexto de negocio específico de WELVER.
+// TODO: completar businessData con los campos reales cuando se integre el proyecto.
+// =============================================================================
+
+export interface WELVERBusinessData {
+  // TODO: agregar campos específicos de WELVER cuando se integre
+  // Ejemplo para ecommerce: products, cart, order
+  // Ejemplo para saas: plan, flags, quotas
+  [key: string]: unknown;
+}
+```
+
+## File: src/modules/welver/welver.config.ts
+```typescript
+// =============================================================================
+// modules/welver/welver.config.ts
+// Configuración base del asistente para el proyecto WELVER.
+// TODO: ajustar systemPrompt, stage y comportamiento cuando se integre el proyecto.
+// =============================================================================
+
+import { ConversationStage } from '@prisma/client';
+
+export const WELVER_CONFIG = {
+  /**
+   * Prompt base del sistema para WELVER.
+   * TODO: definir la persona, tono y reglas de negocio específicas.
+   */
+  systemPrompt: `
+    Eres un asistente de WELVER.
+    TODO: completar con las instrucciones específicas del proyecto.
+  `.trim(),
+
+  /**
+   * Stage inicial de las conversaciones de WELVER.
+   * TODO: ajustar según el flujo de negocio del proyecto.
+   */
+  defaultStage: ConversationStage.INITIAL,
+
+  /**
+   * Modelo LLM preferido para WELVER.
+   * Puede sobrescribirse desde AssistantConfig en DB.
+   */
+  preferredModel: 'llama-3.3-70b-versatile',
+
+  /**
+   * Si este proyecto usa FAQ/RAG como fuente de conocimiento.
+   * TODO: activar cuando se configure la KnowledgeBase del proyecto.
+   */
+  useFaqFallback: false,
+} as const;
+```
+
+## File: src/modules/welver/welver.module.ts
+```typescript
+// =============================================================================
+// modules/welver/welver.module.ts
+// Módulo NestJS para el proyecto WELVER.
+// Se auto-registra en el ProjectStrategyRegistry al inicializar.
+//
+// Para integrar el proyecto real:
+// 1. Agregar HttpModule o cliente gRPC del proyecto en imports
+// 2. Inyectar el cliente en WELVERStrategy
+// 3. Completar enrichContext y afterResponse en la strategy
+// 4. Completar WELVER_CONFIG con el prompt y configuración real
+// =============================================================================
+
+import { Module, OnModuleInit }       from '@nestjs/common';
+import { WELVERStrategy }  from './welver.strategy';
+import { ProjectStrategyRegistry }    from '../../core/strategies/project-strategy.registry';
+
+@Module({
+  providers: [WELVERStrategy],
+  exports:   [WELVERStrategy],
+})
+export class WELVERModule implements OnModuleInit {
+  constructor(
+    private readonly strategy: WELVERStrategy,
+    private readonly registry: ProjectStrategyRegistry,
+  ) {}
+
+  onModuleInit(): void {
+    this.registry.register(this.strategy);
+  }
+}
+```
+
+## File: src/modules/welver/welver.strategy.ts
+```typescript
+// =============================================================================
+// modules/welver/welver.strategy.ts
+// Estrategia de WELVER — implementa ProjectStrategy.
+//
+// enrichContext → TODO: llamar a la API de WELVER para traer contexto
+// afterResponse → TODO: implementar side-effects específicos del proyecto
+//
+// IMPORTANTE: enrichContext nunca debe romper el flujo. Si falla, loguea y
+// devuelve contexto vacío para que el core responda de todas formas.
+// =============================================================================
+
+import { Injectable, Logger }    from '@nestjs/common';
+import type { AssistantSession } from '@prisma/client';
+
+import type { ProjectStrategy }           from '../../core/strategies/project-strategy.interface';
+import { ProjectContext, ProjectType }    from '../../core/strategies/project-context.interface';
+import { WELVER_CONFIG }        from './welver.config';
+
+@Injectable()
+export class WELVERStrategy implements ProjectStrategy {
+  private readonly logger = new Logger(WELVERStrategy.name);
+
+  getProjectType(): ProjectType {
+    return ProjectType.WELVER;
+  }
+
+  async enrichContext(
+    message: string,
+    projectId: string,
+    organizationId: string,
+  ): Promise<ProjectContext> {
+    try {
+      // TODO: llamar a la API de WELVER para enriquecer el contexto
+      // Ejemplo:
+      // const data = await this.welverClient.getContextForMessage(message, projectId);
+
+      return {
+        businessData: {
+          // TODO: mapear datos de WELVER aquí
+        },
+        systemPromptAddons: WELVER_CONFIG.systemPrompt,
+        meta: {
+          projectType: ProjectType.WELVER,
+          projectId,
+          organizationId,
+          enrichedAt: new Date(),
+        },
+      };
+    } catch (error) {
+      // enrichContext nunca rompe el flujo — devuelve contexto vacío
+      this.logger.error(
+        `Error enriqueciendo contexto WELVER: ${(error as Error).message}`,
+      );
+      return {
+        businessData: {},
+        systemPromptAddons: '',
+        meta: {
+          projectType: ProjectType.WELVER,
+          projectId,
+          organizationId,
+          enrichedAt: new Date(),
+        },
+      };
+    }
+  }
+
+  async afterResponse(
+    response: string,
+    context: ProjectContext,
+    _session: AssistantSession,
+  ): Promise<void> {
+    try {
+      // TODO: implementar side-effects específicos de WELVER
+      // Ejemplo:
+      // - actualizar estado de orden
+      // - registrar métricas de negocio
+      // - disparar webhooks del proyecto
+      this.logger.debug(
+        `afterResponse WELVER — projectId: ${context.meta.projectId}`,
+      );
+    } catch (error) {
+      // afterResponse nunca rompe el flujo — solo loguea
+      this.logger.error(
+        `Error en afterResponse WELVER: ${(error as Error).message}`,
+      );
+    }
+  }
+}
+```
+
 ## File: src/notifications/notifications.controller.ts
 ```typescript
 // src/notifications/notifications.controller.ts
@@ -9097,134 +9074,6 @@ import { AssistantModule } from '../assistant/assistant.module';
 export class WidgetModule {}
 ```
 
-## File: src/app.controller.ts
-```typescript
-// src/app.controller.ts
-import { Controller, Get } from '@nestjs/common';
-import { ApiTags, ApiOperation } from '@nestjs/swagger';
-
-@ApiTags('Health')
-@Controller()
-export class AppController {
-  @Get('health')
-  @ApiOperation({ summary: 'Health check' })
-  health() {
-    return {
-      status: 'ok',
-      timestamp: new Date().toISOString(),
-      uptime: Math.floor(process.uptime()),
-    };
-  }
-}
-```
-
-## File: src/app.module.ts
-```typescript
-// src/app.module.ts
-import { Module } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
-import { ThrottlerModule } from '@nestjs/throttler';
-import { FirebaseModule } from './firebase/firebase.module';
-import { ConfigModule } from '@nestjs/config';
-
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
-
-// Infraestructura
-import { AgentsModule } from './agents/agents.module';
-import { PrismaModule } from './prisma/prisma.module';
-import { QueueModule } from './queue/queue.module';
-import { EventsModule } from './events/events.module';
-
-// Config tipada + validación
-import {
-  appConfig, dbConfig, groqConfig,
-  redisConfig, metaConfig, firebaseConfig,
-} from './config/app.config';
-import { validationSchema } from './config/validation.schema';
-
-// Módulos existentes
-import { ChannelsModule } from './channels/channel.module';
-import { GroqModule } from './groq/groq.module';
-import { LangGraphModule } from './langgraph/langgraph.module';
-import { ConversationsModule } from './conversations/conversations.module';
-import { WebhooksModule } from './webhooks/webhooks.module';
-import { MessagesModule } from './messages/messages.module';
-import { ContactsModule } from './contacts/contacts.module';
-import { AiConfigModule } from './ai-config/ai-config.module';
-import { ChannelAccountsModule } from './channel-accounts/channel-accounts.module';
-import { NotificationsModule } from './notifications/notifications.module';
-import { AnalyticsModule } from './analytics/analytics.module';
-
-// Sprint 1+
-import { ProjectsModule } from './projects/projects.module';
-import { CommonModule } from './common/common.module';
-import { OrganizationsModule } from './organizations/organizations.module';
-import { HealthModule } from './health/health.module';
-import { AssistantModule } from './assistant/assistant.module';
-import { WidgetModule } from './widget/widget.module';
-import { FaqModule } from './faq/faq.module';
-
-// Guards
-import { TenantThrottlerGuard } from './common/guards/tenant-throttler.guard';
-
-@Module({
-  imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      load: [appConfig, dbConfig, groqConfig, redisConfig, metaConfig, firebaseConfig],
-      validationSchema,
-      validationOptions: { abortEarly: false },
-    }),
-    ThrottlerModule.forRoot([
-      { name: 'default', ttl: 60_000, limit: 60 },
-      { name: 'burst',   ttl: 5_000,  limit: 20 },
-    ]),
-    PrismaModule,
-    FirebaseModule,
-    AgentsModule,
-    QueueModule,
-    EventsModule,
-    ChannelsModule,
-    GroqModule,
-    LangGraphModule,
-    ConversationsModule,
-    WebhooksModule,
-    MessagesModule,
-    ContactsModule,
-    AiConfigModule,
-    ChannelAccountsModule,
-    NotificationsModule,
-    AnalyticsModule,
-    CommonModule,
-    OrganizationsModule,
-    HealthModule,
-    ProjectsModule,
-    AssistantModule,
-    FaqModule,
-    WidgetModule,
-  ],
-  controllers: [AppController],
-  providers: [
-    AppService,
-    { provide: APP_GUARD, useClass: TenantThrottlerGuard },
-  ],
-})
-export class AppModule {}
-```
-
-## File: src/app.service.ts
-```typescript
-import { Injectable } from '@nestjs/common';
-
-@Injectable()
-export class AppService {
-  getHello(): string {
-    return 'Hello World!';
-  }
-}
-```
-
 ## File: src/main.ts
 ```typescript
 // src/main.ts
@@ -9311,6 +9160,194 @@ bootstrap();
     "deleteOutDir": true
   }
 }
+```
+
+## File: tsconfig.json
+```json
+{
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "resolvePackageJsonExports": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "declaration": true,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "target": "ES2023",
+    "sourceMap": true,
+    "outDir": "./dist",
+    "baseUrl": "./",
+    "paths": {
+      "@/*": ["src/*"]
+    },
+    "incremental": true,
+    "skipLibCheck": true,
+    "strictNullChecks": true,
+    "forceConsistentCasingInFileNames": true,
+    "noImplicitAny": false,
+    "strictBindCallApply": false,
+    "noFallthroughCasesInSwitch": false
+  }
+}
+```
+
+## File: src/ai-config/dto/update-ai-config.dto.ts
+```typescript
+// src/ai-config/dto/update-ai-config.dto.ts
+import {
+  IsString, IsNumber, IsBoolean, IsOptional,
+  IsArray, Min, Max,
+} from 'class-validator';
+
+/**
+ * DTO para actualizar la configuración de IA de un ChannelAccount.
+ * Todos los campos son opcionales — se aplica patch parcial.
+ */
+export class UpdateAiConfigDto {
+  @IsOptional()
+  @IsString()
+  systemPrompt?: string;
+
+  @IsOptional()
+  @IsString()
+  personaName?: string;
+
+  @IsOptional()
+  @IsString()
+  groqModel?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(2)
+  temperature?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(256)
+  @Max(4096)
+  maxTokens?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  @Max(50)
+  contextWindowSize?: number;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  humanTakeoverKeywords?: string[];
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  autoResolveAfterHours?: number;
+
+  @IsOptional()
+  @IsString()
+  welcomeMessage?: string;
+
+  @IsOptional()
+  @IsString()
+  offlineMessage?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isEnabled?: boolean;
+}
+```
+
+## File: src/app.module.ts
+```typescript
+// src/app.module.ts
+import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { FirebaseModule } from './firebase/firebase.module';
+import { ConfigModule } from '@nestjs/config';
+
+// Infraestructura
+import { AgentsModule } from './agents/agents.module';
+import { PrismaModule } from './prisma/prisma.module';
+import { QueueModule } from './queue/queue.module';
+import { EventsModule } from './events/events.module';
+
+// Config tipada + validación
+import {
+  appConfig, dbConfig, groqConfig,
+  redisConfig, metaConfig, firebaseConfig,
+} from './config/app.config';
+import { validationSchema } from './config/validation.schema';
+
+// Módulos de dominio
+import { ChannelsModule }       from './channels/channel.module';
+import { GroqModule }           from './groq/groq.module';
+import { LangGraphModule }      from './langgraph/langgraph.module';
+import { ConversationsModule }  from './conversations/conversations.module';
+import { WebhooksModule }       from './webhooks/webhooks.module';
+import { MessagesModule }       from './messages/messages.module';
+import { ContactsModule }       from './contacts/contacts.module';
+import { AiConfigModule }       from './ai-config/ai-config.module';
+import { ChannelAccountsModule } from './channel-accounts/channel-accounts.module';
+import { NotificationsModule }  from './notifications/notifications.module';
+import { AnalyticsModule }      from './analytics/analytics.module';
+import { ProjectsModule }       from './projects/projects.module';
+import { CommonModule }         from './common/common.module';
+import { OrganizationsModule }  from './organizations/organizations.module';
+import { HealthModule }         from './health/health.module';
+import { AssistantModule }      from './assistant/assistant.module';
+import { WidgetModule }         from './widget/widget.module';
+import { FaqModule }            from './faq/faq.module';
+
+// Guards
+import { TenantThrottlerGuard } from './common/guards/tenant-throttler.guard';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+      load: [appConfig, dbConfig, groqConfig, redisConfig, metaConfig, firebaseConfig],
+      validationSchema,
+      validationOptions: { abortEarly: false },
+    }),
+    ThrottlerModule.forRoot([
+      { name: 'default', ttl: 60_000, limit: 60 },
+      { name: 'burst',   ttl: 5_000,  limit: 20 },
+    ]),
+    PrismaModule,
+    FirebaseModule,
+    AgentsModule,
+    QueueModule,
+    EventsModule,
+    ChannelsModule,
+    GroqModule,
+    LangGraphModule,
+    ConversationsModule,
+    WebhooksModule,
+    MessagesModule,
+    ContactsModule,
+    AiConfigModule,
+    ChannelAccountsModule,
+    NotificationsModule,
+    AnalyticsModule,
+    CommonModule,
+    OrganizationsModule,
+    HealthModule,
+    ProjectsModule,
+    AssistantModule,
+    FaqModule,
+    WidgetModule,
+  ],
+  // Sin AppController ni AppService — health vive en HealthModule (/api/v1/health)
+  providers: [
+    { provide: APP_GUARD, useClass: TenantThrottlerGuard },
+  ],
+})
+export class AppModule {}
 ```
 
 ## File: package.json
@@ -9420,38 +9457,6 @@ bootstrap();
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
-  }
-}
-```
-
-## File: tsconfig.json
-```json
-{
-  "compilerOptions": {
-    "module": "nodenext",
-    "moduleResolution": "nodenext",
-    "resolvePackageJsonExports": true,
-    "esModuleInterop": true,
-    "isolatedModules": true,
-    "declaration": true,
-    "removeComments": true,
-    "emitDecoratorMetadata": true,
-    "experimentalDecorators": true,
-    "allowSyntheticDefaultImports": true,
-    "target": "ES2023",
-    "sourceMap": true,
-    "outDir": "./dist",
-    "baseUrl": "./",
-    "paths": {
-      "@/*": ["src/*"]
-    },
-    "incremental": true,
-    "skipLibCheck": true,
-    "strictNullChecks": true,
-    "forceConsistentCasingInFileNames": true,
-    "noImplicitAny": false,
-    "strictBindCallApply": false,
-    "noFallthroughCasesInSwitch": false
   }
 }
 ```
