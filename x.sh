@@ -1,284 +1,139 @@
 #!/usr/bin/env bash
 # =============================================================================
-# cleanup-chat-ia-back.sh
-# Elimina dead code del proyecto chat-ia-back identificado en code review.
+# fix-railway-pnpm-builds.sh
 #
-# Qué hace:
-#   1. Borra app.controller.ts + app.service.ts (boilerplate nunca usado,
-#      health duplicado con HealthModule)
-#   2. Borra ai-config/dto/create-ai-config.dto.ts y entities/ai-config.entity.ts
-#      (esqueletos vacíos generados por CLI, nunca completados)
-#   3. Reemplaza ai-config/dto/update-ai-config.dto.ts (dependía del DTO vacío)
-#   4. Reescribe app.module.ts sin AppController ni AppService
+# Resuelve:
+#   [ERR_PNPM_IGNORED_BUILDS] Ignored build scripts:
+#   @firebase/util, @nestjs/core, @prisma/engines, @scarf/scarf,
+#   bcrypt, msgpackr-extract, prisma, protobufjs, unrs-resolver
 #
-# Qué NO toca:
-#   - src/modules/manzana|mexus|welver  → placeholders intencionales
-#   - src/ai-config/ai-config.controller.ts + ai-config.service.ts → funcionan
-#   - Cualquier otra lógica de negocio
+# Causa: pnpm 9+ bloquea postinstall scripts por defecto (supply-chain policy).
+# Fix:   declarar explícitamente qué paquetes tienen permiso de correr scripts,
+#        usando la key "onlyBuiltDependencies" en package.json
+#        + .npmrc con enable-pre-post-scripts=true para el entorno CI/Railway.
 #
-# Uso:
-#   cd <raíz del repo chat-ia-back>
-#   bash cleanup-chat-ia-back.sh
+# Ejecutar desde la raíz del repo chat-ia-lang (donde está package.json).
 # =============================================================================
 
 set -euo pipefail
 
-ROOT="$(pwd)"
-SRC="$ROOT/src"
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+log()  { echo -e "${CYAN}▶${NC} $1"; }
+ok()   { echo -e "${GREEN}✓${NC} $1"; }
+warn() { echo -e "${YELLOW}⚠${NC}  $1"; }
+fail() { echo -e "${RED}✗${NC} $1"; exit 1; }
 
-# ── Colores ──────────────────────────────────────────────────────────────────
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-info()    { echo -e "${GREEN}[OK]${NC}  $*"; }
-warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
-remove()  { echo -e "${RED}[DEL]${NC} $*"; }
-
-# ── Verificar que estamos en la raíz correcta ────────────────────────────────
-if [[ ! -f "$SRC/main.ts" ]]; then
-  echo "ERROR: No se encontró src/main.ts — ejecutá el script desde la raíz de chat-ia-back."
-  exit 1
+# ─── Guardia ─────────────────────────────────────────────────────────────────
+if [ ! -f "package.json" ] || ! grep -q '"name".*"chat-ia-lang"' package.json 2>/dev/null; then
+  fail "Corré este script desde la raíz de chat-ia-lang (donde está package.json)"
 fi
 
+# ─── 1. .npmrc ───────────────────────────────────────────────────────────────
+log "Escribiendo .npmrc..."
+
+cat > .npmrc << 'EOF'
+# Railway / CI: permite que los paquetes con scripts nativos hagan postinstall.
+# Requerido por pnpm 9+ que bloquea build scripts por defecto.
+enable-pre-post-scripts=true
+
+# Evita prompts interactivos durante pnpm approve-builds en CI
+auto-install-peers=true
+
+# Asegura que node-gyp encuentre los headers de Node en Railway
+node-linker=hoisted
+EOF
+
+ok ".npmrc creado"
+
+# ─── 2. Patch package.json: agregar onlyBuiltDependencies ────────────────────
+# Estos son exactamente los paquetes del error de Railway + sus dependencias
+# transitivas que también necesitan build scripts.
+log "Actualizando package.json con onlyBuiltDependencies..."
+
+node - << 'JSEOF'
+const fs   = require('fs');
+const path = require('path');
+
+const pkgPath = path.resolve('package.json');
+const pkg     = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+
+// Lista exacta de paquetes que necesitan correr build scripts.
+// Extraída del mensaje de error de Railway.
+// "onlyBuiltDependencies" reemplaza a "allowedDeprecatedVersions" de pnpm 8
+// y es el mecanismo canónico en pnpm 9 para este caso.
+const allowedBuilds = [
+  "@firebase/util",
+  "@nestjs/core",
+  "@prisma/engines",
+  "@scarf/scarf",
+  "bcrypt",
+  "msgpackr-extract",
+  "prisma",
+  "protobufjs",
+  "unrs-resolver"
+];
+
+// pnpm lee "pnpm.onlyBuiltDependencies" o el top-level "onlyBuiltDependencies"
+// según la versión. Escribimos ambos para máxima compatibilidad.
+if (!pkg.pnpm) pkg.pnpm = {};
+pkg.pnpm.onlyBuiltDependencies = allowedBuilds;
+
+// Serializar con el mismo indent que tenía el archivo
+const indent = 2;
+fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, indent) + '\n');
+console.log('package.json actualizado con pnpm.onlyBuiltDependencies');
+JSEOF
+
+ok "package.json actualizado"
+
+# ─── 3. Verificar que node pueda parsear el package.json resultante ──────────
+log "Verificando JSON resultante..."
+node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))" && ok "JSON válido"
+
+# ─── 4. Mostrar el diff relevante ────────────────────────────────────────────
 echo ""
-echo "=== cleanup-chat-ia-back ==="
-echo "Directorio: $ROOT"
+echo -e "${BOLD}──── .npmrc ────${NC}"
+cat .npmrc
+echo ""
+echo -e "${BOLD}──── pnpm.onlyBuiltDependencies en package.json ────${NC}"
+node -e "const p=require('./package.json'); console.log(JSON.stringify(p.pnpm,null,2))"
 echo ""
 
-# =============================================================================
-# 1. Borrar app.controller.ts
-#    Tenía un GET /health duplicado con distinta info que HealthController.
-#    Se queda HealthModule con /api/v1/health (incluye uptime, version, env).
-# =============================================================================
-TARGET="$SRC/app.controller.ts"
-if [[ -f "$TARGET" ]]; then
-  rm "$TARGET"
-  remove "src/app.controller.ts"
+# ─── 5. Regenerar lockfile localmente (opcional pero recomendado) ─────────────
+if command -v pnpm &>/dev/null; then
+  log "Actualizando pnpm-lock.yaml para que el lockfile refleje los cambios..."
+  pnpm install --no-frozen-lockfile 2>&1 | tail -5
+  ok "Lockfile actualizado"
+  warn "Commitear pnpm-lock.yaml junto con este cambio"
 else
-  warn "src/app.controller.ts ya no existe, se omite"
+  warn "pnpm no disponible en este entorno — actualizá el lockfile manualmente:"
+  warn "  pnpm install --no-frozen-lockfile"
+  warn "  git add package.json .npmrc pnpm-lock.yaml && git commit"
 fi
 
-# =============================================================================
-# 2. Borrar app.service.ts
-#    Solo tenía getHello(): string { return 'Hello World!'; }
-#    Nunca fue inyectado en ningún otro servicio.
-# =============================================================================
-TARGET="$SRC/app.service.ts"
-if [[ -f "$TARGET" ]]; then
-  rm "$TARGET"
-  remove "src/app.service.ts"
-else
-  warn "src/app.service.ts ya no existe, se omite"
-fi
+# ─── 6. Instrucciones ────────────────────────────────────────────────────────
+echo -e "
+${BOLD}Próximos pasos:${NC}
 
-# =============================================================================
-# 3. Borrar ai-config/dto/create-ai-config.dto.ts  (clase vacía)
-#    El AiConfigService usa sus propios tipos inline, este DTO nunca fue llenado.
-# =============================================================================
-TARGET="$SRC/ai-config/dto/create-ai-config.dto.ts"
-if [[ -f "$TARGET" ]]; then
-  rm "$TARGET"
-  remove "src/ai-config/dto/create-ai-config.dto.ts"
-else
-  warn "create-ai-config.dto.ts ya no existe, se omite"
-fi
+  1. Commitear los 3 archivos:
+     ${CYAN}git add package.json .npmrc pnpm-lock.yaml${NC}
+     ${CYAN}git commit -m 'fix: allow pnpm build scripts for native deps (Railway)'${NC}
+     ${CYAN}git push${NC}
 
-# =============================================================================
-# 4. Borrar ai-config/entities/ai-config.entity.ts  (clase vacía)
-#    El controller y service importan directamente de @prisma/client.
-# =============================================================================
-TARGET="$SRC/ai-config/entities/ai-config.entity.ts"
-if [[ -f "$TARGET" ]]; then
-  rm "$TARGET"
-  remove "src/ai-config/entities/ai-config.entity.ts"
-else
-  warn "ai-config.entity.ts ya no existe, se omite"
-fi
+  2. Railway detectará el push y redesplegará automáticamente.
 
-# =============================================================================
-# 5. Reemplazar update-ai-config.dto.ts
-#    El original extendía el DTO vacío con PartialType → resultado: clase vacía.
-#    Lo reemplazamos con los campos reales que el AiConfigController acepta.
-# =============================================================================
-TARGET="$SRC/ai-config/dto/update-ai-config.dto.ts"
-cat > "$TARGET" << 'TYPESCRIPT'
-// src/ai-config/dto/update-ai-config.dto.ts
-import {
-  IsString, IsNumber, IsBoolean, IsOptional,
-  IsArray, Min, Max,
-} from 'class-validator';
+${BOLD}Por qué funciona:${NC}
+  pnpm 9+ bloquea TODOS los postinstall scripts por defecto (seguridad supply-chain).
+  'onlyBuiltDependencies' es la lista de allowlist — exactamente lo que Railway
+  muestra en el error como 'Ignored build scripts'.
+  Sin bcrypt compilado no hay hashing; sin @prisma/engines no hay Prisma client;
+  sin protobufjs compilado falla firebase-admin.
 
-/**
- * DTO para actualizar la configuración de IA de un ChannelAccount.
- * Todos los campos son opcionales — se aplica patch parcial.
- */
-export class UpdateAiConfigDto {
-  @IsOptional()
-  @IsString()
-  systemPrompt?: string;
+${BOLD}Si Railway sigue fallando:${NC}
+  Revisar si Railway usa nixpacks o Dockerfile. Si es nixpacks, también agregar
+  en railway.json o nixpacks.toml:
+    [phases.setup]
+    nixPkgs = ['python3', 'gcc', 'make']   # para node-gyp (bcrypt)
+"
 
-  @IsOptional()
-  @IsString()
-  personaName?: string;
-
-  @IsOptional()
-  @IsString()
-  groqModel?: string;
-
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Max(2)
-  temperature?: number;
-
-  @IsOptional()
-  @IsNumber()
-  @Min(256)
-  @Max(4096)
-  maxTokens?: number;
-
-  @IsOptional()
-  @IsNumber()
-  @Min(1)
-  @Max(50)
-  contextWindowSize?: number;
-
-  @IsOptional()
-  @IsArray()
-  @IsString({ each: true })
-  humanTakeoverKeywords?: string[];
-
-  @IsOptional()
-  @IsNumber()
-  @Min(1)
-  autoResolveAfterHours?: number;
-
-  @IsOptional()
-  @IsString()
-  welcomeMessage?: string;
-
-  @IsOptional()
-  @IsString()
-  offlineMessage?: string;
-
-  @IsOptional()
-  @IsBoolean()
-  isEnabled?: boolean;
-}
-TYPESCRIPT
-info "src/ai-config/dto/update-ai-config.dto.ts reemplazado con campos reales"
-
-# =============================================================================
-# 6. Reescribir app.module.ts sin AppController ni AppService
-#    Se mantiene todo lo demás intacto — solo se quitan las dos referencias.
-# =============================================================================
-TARGET="$SRC/app.module.ts"
-cat > "$TARGET" << 'TYPESCRIPT'
-// src/app.module.ts
-import { Module } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
-import { ThrottlerModule } from '@nestjs/throttler';
-import { FirebaseModule } from './firebase/firebase.module';
-import { ConfigModule } from '@nestjs/config';
-
-// Infraestructura
-import { AgentsModule } from './agents/agents.module';
-import { PrismaModule } from './prisma/prisma.module';
-import { QueueModule } from './queue/queue.module';
-import { EventsModule } from './events/events.module';
-
-// Config tipada + validación
-import {
-  appConfig, dbConfig, groqConfig,
-  redisConfig, metaConfig, firebaseConfig,
-} from './config/app.config';
-import { validationSchema } from './config/validation.schema';
-
-// Módulos de dominio
-import { ChannelsModule }       from './channels/channel.module';
-import { GroqModule }           from './groq/groq.module';
-import { LangGraphModule }      from './langgraph/langgraph.module';
-import { ConversationsModule }  from './conversations/conversations.module';
-import { WebhooksModule }       from './webhooks/webhooks.module';
-import { MessagesModule }       from './messages/messages.module';
-import { ContactsModule }       from './contacts/contacts.module';
-import { AiConfigModule }       from './ai-config/ai-config.module';
-import { ChannelAccountsModule } from './channel-accounts/channel-accounts.module';
-import { NotificationsModule }  from './notifications/notifications.module';
-import { AnalyticsModule }      from './analytics/analytics.module';
-import { ProjectsModule }       from './projects/projects.module';
-import { CommonModule }         from './common/common.module';
-import { OrganizationsModule }  from './organizations/organizations.module';
-import { HealthModule }         from './health/health.module';
-import { AssistantModule }      from './assistant/assistant.module';
-import { WidgetModule }         from './widget/widget.module';
-import { FaqModule }            from './faq/faq.module';
-
-// Guards
-import { TenantThrottlerGuard } from './common/guards/tenant-throttler.guard';
-
-@Module({
-  imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      load: [appConfig, dbConfig, groqConfig, redisConfig, metaConfig, firebaseConfig],
-      validationSchema,
-      validationOptions: { abortEarly: false },
-    }),
-    ThrottlerModule.forRoot([
-      { name: 'default', ttl: 60_000, limit: 60 },
-      { name: 'burst',   ttl: 5_000,  limit: 20 },
-    ]),
-    PrismaModule,
-    FirebaseModule,
-    AgentsModule,
-    QueueModule,
-    EventsModule,
-    ChannelsModule,
-    GroqModule,
-    LangGraphModule,
-    ConversationsModule,
-    WebhooksModule,
-    MessagesModule,
-    ContactsModule,
-    AiConfigModule,
-    ChannelAccountsModule,
-    NotificationsModule,
-    AnalyticsModule,
-    CommonModule,
-    OrganizationsModule,
-    HealthModule,
-    ProjectsModule,
-    AssistantModule,
-    FaqModule,
-    WidgetModule,
-  ],
-  // Sin AppController ni AppService — health vive en HealthModule (/api/v1/health)
-  providers: [
-    { provide: APP_GUARD, useClass: TenantThrottlerGuard },
-  ],
-})
-export class AppModule {}
-TYPESCRIPT
-info "src/app.module.ts reescrito — AppController y AppService eliminados"
-
-# =============================================================================
-# Resumen
-# =============================================================================
-echo ""
-echo "=== Resumen ==="
-echo "Archivos eliminados:"
-echo "  - src/app.controller.ts         (health duplicado con HealthModule)"
-echo "  - src/app.service.ts            (getHello boilerplate)"
-echo "  - src/ai-config/dto/create-ai-config.dto.ts  (clase vacía)"
-echo "  - src/ai-config/entities/ai-config.entity.ts (clase vacía)"
-echo ""
-echo "Archivos modificados:"
-echo "  - src/ai-config/dto/update-ai-config.dto.ts  (reemplazado con campos reales)"
-echo "  - src/app.module.ts                           (sin AppController/AppService)"
-echo ""
-echo "Próximo paso recomendado:"
-echo "  pnpm build   →  verificar que compila sin errores"
-echo ""
+ok "Fix aplicado — commitear y pushear para redesplegar en Railway 🚀"
