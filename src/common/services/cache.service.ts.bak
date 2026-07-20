@@ -24,8 +24,6 @@ export class CacheService {
     if (this.client && this.connected) await this.client.disconnect();
   }
 
-  private get redisEnabled() { return process.env['REDIS_ENABLED'] === 'true'; }
-
   async get<T>(key: string): Promise<T | null> {
     if (!this.connected || !this.client) return null;
     try {
