@@ -34,7 +34,7 @@ COPY prisma.config.ts ./
 COPY src ./src
 
 # Generar prisma client explícitamente (defensa en profundidad)
-RUN npx prisma generate
+RUN DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy" npx prisma generate
 
 # Compilar TypeScript
 RUN pnpm build
