@@ -103,18 +103,5 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@firebase/util",
-      "@nestjs/core",
-      "@prisma/engines",
-      "@scarf/scarf",
-      "bcrypt",
-      "msgpackr-extract",
-      "prisma",
-      "protobufjs",
-      "unrs-resolver"
-    ]
   }
 }
