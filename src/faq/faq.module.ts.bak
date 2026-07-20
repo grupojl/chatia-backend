@@ -16,7 +16,7 @@ import { QUEUES } from '../queue/queue.constants';
 @Module({
   imports: [
     GroqModule,
-    ...(REDIS_ENABLED ? [BullModule.registerQueue({
+    BullModule.registerQueue({
       name: QUEUES.FAQ_INGEST,
       defaultJobOptions: {
         attempts: 3,
@@ -24,18 +24,18 @@ import { QUEUES } from '../queue/queue.constants';
         removeOnComplete: 100,
         removeOnFail: 500,
       },
-    })] : []),
+    }),
   ],
   controllers: [FaqController],
   providers: [
     KnowledgeBaseService,
     KbDocumentService,
-    FaqIngestionService
+    FaqIngestionService,
+    FaqIngestionProcessor,
     FaqQueryService,
     RagService,
     EmbeddingService,
-    CacheService,,
-    ...(REDIS_ENABLED ? [FaqIngestionProcessor] : []),
+    CacheService,
   ],
   exports: [FaqQueryService, KnowledgeBaseService, RagService],
 })
