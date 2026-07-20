@@ -37,8 +37,8 @@ export class ConversationsService {
     private readonly events: EventsGateway,
     private readonly assignment: AssignmentService,
     private readonly notifications: NotificationsService,
-    @Optional() @InjectQueue(QUEUES.OUTGOING_MESSAGE)
-    private readonly outgoingQueue: Queue<OutgoingMessageJobData> | null,
+    @InjectQueue(QUEUES.OUTGOING_MESSAGE)
+    private readonly outgoingQueue: Queue<OutgoingMessageJobData>,
     @Optional() private readonly assistantChat?: AssistantChatService,
   ) {}
 
@@ -536,7 +536,7 @@ export class ConversationsService {
 
     this.events.emitNewMessage(organizationId, conversationId, outboundMsg);
 
-    if (!this.outgoingQueue) { this.logger?.warn("[no-op] outgoingQueue deshabilitada"); } else await this.outgoingQueue.add(
+    await this.outgoingQueue.add(
       JOBS.SEND_MESSAGE,
       {
         messageId: outboundMsg.id,
