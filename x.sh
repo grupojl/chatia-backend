@@ -1,121 +1,134 @@
 #!/usr/bin/env bash
 # =============================================================================
-# fix-chatia-kb-document-service.sh
-# Fix: KbDocumentService tiene @InjectQueue en constructor.
-# Cuando REDIS_ENABLED=false la queue no existe → falla.
-# Solución: @Optional() en la queue, enqueueIngest() es no-op sin Redis.
+# fix-chatia-webhooks-conversations-service.sh
+# Fix: WebhooksService y ConversationsService tienen @InjectQueue sin @Optional.
+# También busca todos los demás @InjectQueue sin @Optional en el proyecto.
 # Repo: chatia-backend
 # =============================================================================
 set -euo pipefail
 
-FILE="src/faq/document/kb-document.service.ts"
-
-if [ ! -f "$FILE" ]; then
+if [ ! -f "src/webhooks/webhooks.service.ts" ]; then
   echo "❌  Corré desde la raíz del repo chatia-backend"
   exit 1
 fi
 
-cp "$FILE" "${FILE}.bak"
-
-cat > "$FILE" << 'TSEOF'
-// src/faq/document/kb-document.service.ts
-import { Injectable, NotFoundException, Logger, Optional } from '@nestjs/common';
-import { InjectQueue }  from '@nestjs/bullmq';
-import { Queue }        from 'bullmq';
-import { PrismaService } from '../../prisma/prisma.service';
-import { CreateKbDocumentDto } from './dto/kb-document.dto';
-import { QUEUES, JOBS } from '../../queue/queue.constants';
-
-export interface IngestJobData { documentId: string; organizationId: string; }
+# ── webhooks.service.ts ───────────────────────────────────────────────────────
+cp src/webhooks/webhooks.service.ts src/webhooks/webhooks.service.ts.bak
+cat > src/webhooks/webhooks.service.ts << 'TSEOF'
+// src/webhooks/webhooks.service.ts
+import { Injectable, Logger, Optional, UnauthorizedException } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue }       from 'bullmq';
+import { PrismaService }    from '../prisma/prisma.service';
+import { ChannelRegistry }  from '../channels/channel.registry';
+import { ChannelType }      from '@prisma/client';
+import { QUEUES, JOBS }     from '../queue/queue.constants';
+import type { IncomingMessageJobData } from '../queue/processors/incoming-message.processor';
 
 @Injectable()
-export class KbDocumentService {
-  private readonly logger = new Logger(KbDocumentService.name);
+export class WebhooksService {
+  private readonly logger = new Logger(WebhooksService.name);
 
   constructor(
-    private readonly prisma: PrismaService,
-    @Optional() @InjectQueue(QUEUES.FAQ_INGEST) private readonly ingestQueue: Queue<IngestJobData> | null,
+    private readonly prisma:           PrismaService,
+    private readonly channelRegistry:  ChannelRegistry,
+    @Optional() @InjectQueue(QUEUES.INCOMING_MESSAGE)
+    private readonly incomingQueue: Queue<IncomingMessageJobData> | null,
   ) {}
 
-  async create(kbId: string, organizationId: string, dto: CreateKbDocumentDto) {
-    const kb = await this.prisma.knowledgeBase.findFirst({
-      where: { id: kbId, organizationId },
+  async verify(channelType: ChannelType, externalId: string, query: Record<string, string>) {
+    const account = await this.prisma.channelAccount.findUnique({
+      where: { channelType_externalId: { channelType, externalId } },
     });
-    if (!kb) throw new NotFoundException('Knowledge base no encontrada');
+    if (!account) throw new UnauthorizedException();
 
-    const doc = await this.prisma.kbDocument.create({
-      data: { ...dto, knowledgeBaseId: kbId, organizationId, status: 'PENDING' },
+    const channel   = this.channelRegistry.get(channelType);
+    const challenge = channel.verifyWebhook(query, {
+      externalId:          account.externalId,
+      accessToken:         account.accessToken,
+      extraConfig:         account.extraConfig as Record<string, unknown>,
+      webhookVerifyToken:  account.webhookVerifyToken,
     });
 
-    await this.enqueueIngest(doc.id, organizationId);
-    this.logger.log(`Documento creado${this.ingestQueue ? ' y encolado' : ' (ingesta deshabilitada sin Redis)'}: ${doc.id}`);
-    return { success: true, data: doc };
+    if (challenge === false) throw new UnauthorizedException('Token inválido');
+    return challenge;
   }
 
-  async findAll(kbId: string, organizationId: string, status?: string) {
-    const docs = await this.prisma.kbDocument.findMany({
-      where: {
-        knowledgeBaseId: kbId,
-        organizationId,
-        ...(status ? { status: status as any } : {}),
-      },
-      orderBy: { createdAt: 'desc' },
+  async handleEvent(
+    channelType: ChannelType,
+    externalId:  string,
+    payload:     unknown,
+    rawBody:     Buffer,
+    signature?:  string,
+  ) {
+    const account = await this.prisma.channelAccount.findUnique({
+      where: { channelType_externalId: { channelType, externalId } },
     });
-    return { success: true, data: docs };
-  }
+    if (!account) throw new UnauthorizedException();
 
-  async reindex(documentId: string, organizationId: string) {
-    const doc = await this.prisma.kbDocument.findFirst({
-      where: { id: documentId, organizationId },
-    });
-    if (!doc) throw new NotFoundException('Documento no encontrado');
+    const channel = this.channelRegistry.get(channelType);
 
-    await this.prisma.kbChunk.deleteMany({ where: { documentId } });
-
-    await this.prisma.kbDocument.update({
-      where: { id: documentId },
-      data: { status: 'PENDING', chunkCount: 0, errorMessage: null, indexedAt: null },
-    });
-
-    await this.enqueueIngest(documentId, organizationId);
-    return { success: true, message: this.ingestQueue ? 'Re-indexación encolada' : 'Re-indexación no disponible sin Redis' };
-  }
-
-  async remove(documentId: string, organizationId: string) {
-    const doc = await this.prisma.kbDocument.findFirst({
-      where: { id: documentId, organizationId },
-    });
-    if (!doc) throw new NotFoundException('Documento no encontrado');
-
-    await this.prisma.kbDocument.delete({ where: { id: documentId } });
-    return { success: true, message: 'Documento eliminado' };
-  }
-
-  private async enqueueIngest(documentId: string, organizationId: string): Promise<void> {
-    if (!this.ingestQueue) {
-      this.logger.debug(`[no-op] ingesta ignorada (Redis deshabilitado): ${documentId}`);
-      return;
+    if (signature) {
+      const valid = channel.verifySignature?.(
+        rawBody,
+        signature,
+        account.webhookVerifyToken ?? '',
+      );
+      if (valid === false) throw new UnauthorizedException('Firma inválida');
     }
-    await this.ingestQueue.add(
-      JOBS.FAQ_INGEST_DOCUMENT,
-      { documentId, organizationId },
-      {
-        jobId:    `ingest:${documentId}`,
-        attempts: 3,
-        backoff:  { type: 'exponential', delay: 3000 },
-      },
-    );
+
+    const msg = channel.parseIncomingWebhook(payload);
+    if (!msg || msg.length === 0) return { status: 'ignored' };
+
+    if (!this.incomingQueue) {
+      this.logger.warn('[no-op] webhook recibido pero cola deshabilitada (REDIS_ENABLED=false)');
+      return { status: 'ok-noop' };
+    }
+
+    for (const m of msg) {
+      await this.incomingQueue.add(
+        JOBS.PROCESS_MESSAGE,
+        { channelAccountId: account.id, channelType, msg: m },
+        {
+          jobId:    `msg:${account.id}:${m.externalId}`,
+          attempts: 3,
+          backoff:  { type: 'exponential', delay: 2000 },
+        },
+      );
+    }
+
+    return { status: 'ok' };
   }
 }
 TSEOF
+echo "✅  webhooks.service.ts"
 
-echo "✅  kb-document.service.ts — queue @Optional()"
+# ── conversations.service.ts — outgoingQueue ──────────────────────────────────
+CONV="src/conversations/conversations.service.ts"
+if [ -f "$CONV" ] && grep -q "@InjectQueue" "$CONV" && ! grep -q "@Optional" "$CONV"; then
+  cp "$CONV" "${CONV}.bak"
+  # Agregar Optional al import de @nestjs/common
+  sed -i "s|import { Injectable|import { Injectable, Optional|" "$CONV"
+  # Hacer la queue opcional
+  sed -i "s|@InjectQueue(QUEUES.OUTGOING_MESSAGE)\n    private readonly outgoingQueue|@Optional() @InjectQueue(QUEUES.OUTGOING_MESSAGE)\n    private readonly outgoingQueue|" "$CONV"
+  # sed en una sola línea por si está en la misma línea
+  sed -i "s|@InjectQueue(QUEUES.OUTGOING_MESSAGE) private readonly outgoingQueue: Queue<OutgoingMessageJobData>|@Optional() @InjectQueue(QUEUES.OUTGOING_MESSAGE) private readonly outgoingQueue: Queue<OutgoingMessageJobData> \| null|" "$CONV"
+  echo "✅  conversations.service.ts (sed básico — verificá manualmente)"
+fi
+
+# ── assistant chat service — ASSISTANT_CHAT queue ────────────────────────────
+ASST="src/assistant/processors/assistant-chat.processor.ts"
+# El processor ya es condicional en el módulo — OK
+
+# ── Reporte final: todos los @InjectQueue sin @Optional ──────────────────────
 echo ""
-echo "🔍  Buscando otros servicios con @InjectQueue sin @Optional..."
+echo "🔍  Servicios con @InjectQueue sin @Optional (verificar):"
 grep -r "@InjectQueue" src/ --include="*.ts" -l | while read f; do
   if grep -q "@InjectQueue" "$f" && ! grep -q "@Optional" "$f"; then
-    echo "   ⚠️  $f — tiene @InjectQueue sin @Optional"
+    echo "   ⚠️  $f"
+    grep -n "@InjectQueue" "$f"
   fi
 done
+
 echo ""
-echo "✅  Reiniciá el contenedor de chatia-backend"
+echo "✅  Fix aplicado — reiniciá el contenedor"
