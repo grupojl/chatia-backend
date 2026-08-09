@@ -1,163 +1,127 @@
 #!/usr/bin/env bash
 # =============================================================================
-# fix-dockerfiles.sh
-# Reescribe los Dockerfiles de chat-ia-back y pasarela-pagos.
-# Ejecutar desde la raíz de cada repo:
-#   cd chat-ia-back   && bash fix-dockerfiles.sh
-#   cd pasarela-pagos && bash fix-dockerfiles.sh
+# x.sh — Fix: CacheService ECONNRESET loop cuando REDIS_ENABLED=false
+# Repo: chat-ia-lang (proyecto standalone)
+#
+# USO:
+#   cd ~/Desktop/codigo/chat-ia-lang
+#   bash x.sh
 # =============================================================================
 
 set -euo pipefail
 
-GREEN='\033[0;32m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
-ok()  { echo -e "${GREEN}✓${NC} $1"; }
-log() { echo -e "${CYAN}▶${NC} $1"; }
+BLUE='\033[0;34m'; GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
+log() { echo -e "${BLUE}[→]${NC} $1"; }
+ok()  { echo -e "${GREEN}[✓]${NC} $1"; }
+err() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 
-PKG_NAME=$(node -e "process.stdout.write(require('./package.json').name || '')")
+TARGET="src/common/services/cache.service.ts"
 
-case "$PKG_NAME" in
-  "chat-ia-lang")
+[[ ! -f "$TARGET" ]] && err "No encontré $TARGET — ejecutá este script desde la raíz de chat-ia-lang"
 
-log "Escribiendo Dockerfile para chat-ia-back..."
-cat > Dockerfile << 'EOF'
-# =============================================================================
-# chat-ia-back — Dockerfile
-# =============================================================================
+log "Backup → ${TARGET}.bak"
+cp "$TARGET" "${TARGET}.bak"
 
-# ── Stage 1: instalar dependencias ───────────────────────────────────────────
-FROM node:22-alpine AS deps
+log "Aplicando fix..."
 
-WORKDIR /app
+cat > "$TARGET" << 'EOF'
+// src/common/services/cache.service.ts
+import { Injectable, Logger } from '@nestjs/common';
+import { createClient, RedisClientType } from 'redis';
 
-# Fijar pnpm 10 — pnpm 11 rompe con onlyBuiltDependencies en package.json
-RUN corepack enable && corepack prepare pnpm@10.11.0 --activate
+@Injectable()
+export class CacheService {
+  private readonly logger = new Logger(CacheService.name);
+  private client: RedisClientType | null = null;
+  private connected = false;
 
-COPY package.json pnpm-lock.yaml ./
+  private get redisEnabled(): boolean {
+    return process.env['REDIS_ENABLED'] === 'true';
+  }
 
-# prisma/ debe estar presente ANTES de pnpm install
-# para que el postinstall de @prisma/client pueda generar el client
-COPY prisma ./prisma
+  async onModuleInit() {
+    // Sin este guard, el cliente intenta conectar aunque REDIS_ENABLED=false,
+    // generando ECONNRESET en loop cada 30s e impidiendo el sleep en Railway.
+    if (!this.redisEnabled) {
+      this.logger.log('CacheService: Redis deshabilitado (REDIS_ENABLED=false) — modo no-op');
+      return;
+    }
 
-RUN pnpm install --frozen-lockfile
+    try {
+      this.client = createClient({
+        url: process.env['REDIS_URL'] ?? 'redis://localhost:6379',
+        socket: {
+          // Corta después de 10 reintentos en lugar de reintentar eternamente
+          reconnectStrategy: (retries) => {
+            if (retries > 10) {
+              this.logger.warn('CacheService: Redis sin respuesta tras 10 reintentos — modo no-op');
+              return new Error('Redis: máximo de reintentos alcanzado');
+            }
+            return Math.min(retries * 500, 5000);
+          },
+        },
+      }) as RedisClientType;
 
-# ── Stage 2: build ────────────────────────────────────────────────────────────
-FROM node:22-alpine AS builder
+      this.client.on('error', (err) => this.logger.warn(`Redis error: ${err}`));
+      await this.client.connect();
+      this.connected = true;
+      this.logger.log('CacheService: Redis conectado');
+    } catch (err) {
+      this.logger.warn(`CacheService: Redis no disponible — modo no-op: ${err}`);
+    }
+  }
 
-WORKDIR /app
+  async onModuleDestroy() {
+    if (this.client && this.connected) await this.client.disconnect();
+  }
 
-RUN corepack enable && corepack prepare pnpm@10.11.0 --activate
+  async get<T>(key: string): Promise<T | null> {
+    if (!this.connected || !this.client) return null;
+    try {
+      const val = await this.client.get(key);
+      return val ? (JSON.parse(val) as T) : null;
+    } catch {
+      return null;
+    }
+  }
 
-# Traer node_modules ya instalados (con prisma client generado)
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/prisma       ./prisma
+  async set(key: string, value: unknown, ttlSeconds = 3600): Promise<void> {
+    if (!this.connected || !this.client) return;
+    try {
+      await this.client.set(key, JSON.stringify(value), { EX: ttlSeconds });
+    } catch (err) {
+      this.logger.warn(`Cache set falló: ${err}`);
+    }
+  }
 
-COPY package.json pnpm-lock.yaml nest-cli.json tsconfig.json ./
-COPY src ./src
+  async del(pattern: string): Promise<void> {
+    if (!this.connected || !this.client) return;
+    try {
+      const keys = await this.client.keys(pattern);
+      if (keys.length) await this.client.del(keys);
+    } catch (err) {
+      this.logger.warn(`Cache del falló: ${err}`);
+    }
+  }
 
-# Generar prisma client explícitamente (defensa en profundidad)
-RUN npx prisma generate
-
-# Compilar TypeScript
-RUN pnpm build
-
-# ── Stage 3: producción ───────────────────────────────────────────────────────
-FROM node:22-alpine AS runner
-
-WORKDIR /app
-
-ENV NODE_ENV=production
-
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-
-# Copiar node_modules del BUILDER (antes de cualquier prune)
-# NO usar pnpm prune --prod: elimina @prisma/client-runtime-utils
-# que es dependencia interna de Prisma 7 y rompe en runtime
-COPY --from=builder --chown=appuser:appgroup /app/node_modules ./node_modules
-COPY --from=builder --chown=appuser:appgroup /app/dist         ./dist
-COPY --from=builder --chown=appuser:appgroup /app/prisma       ./prisma
-COPY --chown=appuser:appgroup package.json ./
-
-USER appuser
-
-EXPOSE 3000
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD wget -qO- http://localhost:3000/api/v1/health || exit 1
-
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/main"]
+  buildFaqKey(kbId: string, question: string): string {
+    let hash = 0;
+    for (let i = 0; i < question.length; i++) {
+      hash = ((hash << 5) - hash + question.charCodeAt(i)) | 0;
+    }
+    return `faq:${kbId}:${Math.abs(hash)}`;
+  }
+}
 EOF
 
-ok "Dockerfile chat-ia-back listo"
-;;
+ok "Archivo actualizado"
 
-  "pasarela-pagos")
-
-log "Escribiendo Dockerfile para pasarela-pagos..."
-cat > Dockerfile << 'EOF'
-# =============================================================================
-# pasarela-pagos — Dockerfile
-# =============================================================================
-
-# ── Stage 1: instalar dependencias ───────────────────────────────────────────
-FROM node:22-alpine AS deps
-
-WORKDIR /app
-
-RUN corepack enable && corepack prepare pnpm@10.11.0 --activate
-
-COPY package.json pnpm-lock.yaml ./
-
-COPY prisma ./prisma
-
-RUN pnpm install --frozen-lockfile
-
-# ── Stage 2: build ────────────────────────────────────────────────────────────
-FROM node:22-alpine AS builder
-
-WORKDIR /app
-
-RUN corepack enable && corepack prepare pnpm@10.11.0 --activate
-
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/prisma       ./prisma
-
-COPY package.json pnpm-lock.yaml nest-cli.json tsconfig.json ./
-COPY src ./src
-
-RUN npx prisma generate
-
-RUN pnpm build
-
-# ── Stage 3: producción ───────────────────────────────────────────────────────
-FROM node:22-alpine AS runner
-
-WORKDIR /app
-
-ENV NODE_ENV=production
-
-RUN addgroup -S app && adduser -S app -G app
-
-COPY --from=builder --chown=app:app /app/node_modules ./node_modules
-COPY --from=builder --chown=app:app /app/dist         ./dist
-COPY --from=builder --chown=app:app /app/prisma       ./prisma
-COPY --chown=app:app package.json ./
-
-USER app
-
-EXPOSE 3000
-
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/main.js"]
-EOF
-
-ok "Dockerfile pasarela-pagos listo"
-;;
-
-  *)
-    echo "Repo no reconocido: '$PKG_NAME'. Esperado: chat-ia-lang o pasarela-pagos"
-    exit 1
-    ;;
-esac
+log "Verificando fix..."
+grep -n "if (!this.redisEnabled)" "$TARGET" > /dev/null && ok "Guard en onModuleInit ✓" || err "Guard no encontrado"
+grep -n "reconnectStrategy"       "$TARGET" > /dev/null && ok "reconnectStrategy con límite ✓" || err "reconnectStrategy no encontrado"
 
 echo ""
-echo -e "${BOLD}Commitear:${NC}"
-echo -e "  ${CYAN}git add Dockerfile && git commit -m 'fix: Dockerfile pnpm 10 + no prune + prisma generate' && git push${NC}"
+echo -e "${GREEN}Listo. Próximos pasos:${NC}"
+echo "  git add $TARGET"
+echo "  git commit -m 'fix(cache): cortar conexión Redis si REDIS_ENABLED=false'"
+echo "  git push"
