@@ -1,7 +1,9 @@
 // src/queue/queue.module.ts
-import { Module }     from '@nestjs/common';
-import { BullModule } from '@nestjs/bullmq';
-import { QUEUES }     from './queue.constants';
+// REDIS_ENABLED=false → BullModule no se inicializa, workers no corren.
+// Los processors fallan silenciosamente si se encola sin Redis — aceptable en dev.
+import { Module }      from '@nestjs/common';
+import { BullModule }  from '@nestjs/bullmq';
+import { QUEUES }      from './queue.constants';
 import { IncomingMessageProcessor } from './processors/incoming-message.processor';
 import { OutgoingMessageProcessor } from './processors/outgoing-message.processor';
 import { ChannelsModule }      from '../channels/channel.module';
@@ -25,6 +27,6 @@ const REDIS_URL     = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
     EventsModule,
   ],
   providers: REDIS_ENABLED ? [IncomingMessageProcessor, OutgoingMessageProcessor] : [],
-  exports:   REDIS_ENABLED ? [BullModule] : [],
+  exports: [BullModule],
 })
 export class QueueModule {}
