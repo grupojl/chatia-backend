@@ -8,15 +8,39 @@ export class CacheService {
   private client: RedisClientType | null = null;
   private connected = false;
 
+  private get redisEnabled(): boolean {
+    return process.env['REDIS_ENABLED'] === 'true';
+  }
+
   async onModuleInit() {
+    // Sin este guard, el cliente intenta conectar aunque REDIS_ENABLED=false,
+    // generando ECONNRESET en loop cada 30s e impidiendo el sleep en Railway.
+    if (!this.redisEnabled) {
+      this.logger.log('CacheService: Redis deshabilitado (REDIS_ENABLED=false) — modo no-op');
+      return;
+    }
+
     try {
-      this.client = createClient({ url: process.env.REDIS_URL ?? 'redis://localhost:6379' }) as RedisClientType;
+      this.client = createClient({
+        url: process.env['REDIS_URL'] ?? 'redis://localhost:6379',
+        socket: {
+          // Corta después de 10 reintentos en lugar de reintentar eternamente
+          reconnectStrategy: (retries) => {
+            if (retries > 10) {
+              this.logger.warn('CacheService: Redis sin respuesta tras 10 reintentos — modo no-op');
+              return new Error('Redis: máximo de reintentos alcanzado');
+            }
+            return Math.min(retries * 500, 5000);
+          },
+        },
+      }) as RedisClientType;
+
       this.client.on('error', (err) => this.logger.warn(`Redis error: ${err}`));
       await this.client.connect();
       this.connected = true;
-      this.logger.log('Cache Redis conectado');
+      this.logger.log('CacheService: Redis conectado');
     } catch (err) {
-      this.logger.warn(`Cache Redis no disponible — funcionando sin cache: ${err}`);
+      this.logger.warn(`CacheService: Redis no disponible — modo no-op: ${err}`);
     }
   }
 
@@ -54,7 +78,6 @@ export class CacheService {
   }
 
   buildFaqKey(kbId: string, question: string): string {
-    // Hash simple para la key
     let hash = 0;
     for (let i = 0; i < question.length; i++) {
       hash = ((hash << 5) - hash + question.charCodeAt(i)) | 0;
