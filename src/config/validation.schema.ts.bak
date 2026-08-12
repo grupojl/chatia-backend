@@ -18,8 +18,7 @@ export const validationSchema = Joi.object({
   GROQ_API_KEY: Joi.string().required(),
 
   // ── Ecosistema SaaS ────────────────────────────────────────────────────────
-  // DEPRECATED ADR-001 — eliminar en Sprint 2
-  // DASHBOARD_URL: Joi.string().uri().optional(),,
+  DASHBOARD_URL: Joi.string().uri().required(),
 
   // ── Firebase (compartido con owner-dashboard) ──────────────────────────────
   // Opcionales: si no están, el sistema arranca en modo dev sin auth real
@@ -32,7 +31,4 @@ export const validationSchema = Joi.object({
 
   // ── CORS ───────────────────────────────────────────────────────────────────
   ALLOWED_ORIGINS: Joi.string().optional().allow(''),
-  // ── Plataforma ─────────────────────────────────────────────────────────────
-  PLATFORM_ADMIN_KEY: Joi.string().optional(),
-
 }).options({ allowUnknown: true });

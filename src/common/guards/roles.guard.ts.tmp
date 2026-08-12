@@ -16,19 +16,20 @@ export class RolesGuard implements CanActivate {
       context.getClass(),
     ]);
 
+    // Si no hay @Roles() en el handler, permitir siempre
     if (!required?.length) return true;
 
     const request = context.switchToHttp().getRequest();
     const tenant: TenantContext | undefined = request.tenant;
 
-    if (!tenant?.role) {
-      throw new ForbiddenException('Sin rol asignado');
+    if (!tenant?.roles?.length) {
+      throw new ForbiddenException('Sin roles asignados');
     }
 
-    const hasRole = required.includes(tenant.role);
+    const hasRole = required.some((r) => tenant.role === r);
     if (!hasRole) {
       throw new ForbiddenException(
-        `Requiere rol: ${required.join(' o ')} — tenés: ${tenant.role}`,
+        `Requiere rol: ${required.join(' o ')} — tenés: ${tenant.roles.join(', ')}`,
       );
     }
 

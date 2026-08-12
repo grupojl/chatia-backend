@@ -17,7 +17,7 @@ export class OrganizationsService {
     try {
       await this.prisma.organization.upsert({
         where: { id },
-        create: { id, ecosystemId: 'dev', name, slug, isActive: true },
+        create: { id, name, slug, isActive: true },
         update: { name, slug }, // actualiza nombre/slug si cambiaron en el dashboard
       });
     } catch (err) {

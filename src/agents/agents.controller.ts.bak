@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 // src/agents/agents.controller.ts
 import {
   Controller, Post, Get, Patch, Body, Param,
@@ -66,7 +67,7 @@ export class AgentsController {
 
     if (!organizationId) {
       const org = await this.prisma.organization.create({
-        data: { name: `Org de ${dto.name}` },
+        data: { id: randomUUID(), name: `Org de ${dto.name}`, slug: `org-${Date.now()}`, isActive: true },
       });
       organizationId = org.id;
     }

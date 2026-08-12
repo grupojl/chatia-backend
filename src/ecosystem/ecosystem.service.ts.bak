@@ -1,0 +1,92 @@
+// src/ecosystem/ecosystem.service.ts
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  ConflictException,
+} from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import type { RegisterEcosystemDto } from './dto/register-ecosystem.dto';
+
+@Injectable()
+export class EcosystemService {
+  private readonly logger = new Logger(EcosystemService.name);
+
+  constructor(private readonly prisma: PrismaService) {}
+
+  // ── Registro de ecosistema nuevo ─────────────────────────────────────────
+  async register(dto: RegisterEcosystemDto) {
+    const existing = await this.prisma.ecosystem.findUnique({
+      where: { firebaseProjectId: dto.firebaseProjectId },
+    });
+    if (existing) {
+      throw new ConflictException(
+        `Ya existe un ecosistema con firebaseProjectId: ${dto.firebaseProjectId}`,
+      );
+    }
+    const ecosystem = await this.prisma.ecosystem.create({
+      data: {
+        firebaseProjectId: dto.firebaseProjectId,
+        name:   dto.name,
+        config: dto.config ?? {},
+      },
+    });
+    this.logger.log(`Ecosistema registrado: ${ecosystem.name} (${ecosystem.id})`);
+    return { success: true, data: ecosystem };
+  }
+
+  // ── Resolución por firebaseProjectId ─────────────────────────────────────
+  // Llamado en cada request desde TenantGuard (Sprint 2)
+  async resolveByFirebaseProjectId(firebaseProjectId: string) {
+    return this.prisma.ecosystem.findUnique({
+      where: { firebaseProjectId },
+    });
+  }
+
+  // ── Listar todos ──────────────────────────────────────────────────────────
+  async findAll() {
+    return this.prisma.ecosystem.findMany({
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true,
+        firebaseProjectId: true,
+        name: true,
+        isActive: true,
+        config: true,
+        createdAt: true,
+        _count: { select: { organizations: true } },
+      },
+    });
+  }
+
+  // ── Actualizar config ─────────────────────────────────────────────────────
+  async updateConfig(id: string, config: Record<string, unknown>) {
+    const ecosystem = await this.prisma.ecosystem.findUnique({ where: { id } });
+    if (!ecosystem) throw new NotFoundException(`Ecosistema ${id} no encontrado`);
+    return this.prisma.ecosystem.update({ where: { id }, data: { config } });
+  }
+
+  // ── Desactivar ────────────────────────────────────────────────────────────
+  async deactivate(id: string) {
+    const ecosystem = await this.prisma.ecosystem.findUnique({ where: { id } });
+    if (!ecosystem) throw new NotFoundException(`Ecosistema ${id} no encontrado`);
+    await this.prisma.ecosystem.update({ where: { id }, data: { isActive: false } });
+    this.logger.warn(`Ecosistema desactivado: ${ecosystem.name} (${id})`);
+    return { success: true, message: `Ecosistema ${ecosystem.name} desactivado` };
+  }
+
+  // ── Upsert pasivo de Organization ─────────────────────────────────────────
+  // Reemplaza a OrganizationsService.ensureExists() — llamado desde TenantGuard
+  async ensureOrganization(
+    ecosystemId: string,
+    orgId:       string,
+    name:        string,
+    slug?:       string,
+  ) {
+    return this.prisma.organization.upsert({
+      where:  { id: orgId },
+      update: { name, ...(slug ? { slug } : {}) },
+      create: { id: orgId, ecosystemId, name, ...(slug ? { slug } : {}) },
+    });
+  }
+}

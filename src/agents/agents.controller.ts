@@ -67,7 +67,7 @@ export class AgentsController {
 
     if (!organizationId) {
       const org = await this.prisma.organization.create({
-        data: { id: randomUUID(), name: `Org de ${dto.name}`, slug: `org-${Date.now()}`, isActive: true },
+        data: { id: randomUUID(), ecosystemId: 'dev', name: `Org de ${dto.name}`, slug: `org-${Date.now()}`, isActive: true },
       });
       organizationId = org.id;
     }
@@ -129,7 +129,7 @@ export class AgentsController {
     @Tenant() tenant: TenantContext,
     @Body() dto: UpdateAgentDto,
   ) {
-    const isAdmin = tenant.roles.includes('admin');
+    const isAdmin = tenant.role === 'OWNER' || tenant.role === 'ADMIN';
     const isSelf  = tenant.agentId === id;
 
     if (!isAdmin && !isSelf) {

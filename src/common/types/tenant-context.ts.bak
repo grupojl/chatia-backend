@@ -4,19 +4,19 @@
 // Disponible via @Tenant() decorator en todos los controllers.
 //
 // BREAKING CHANGE (ADR-001 Sprint 0):
-//   roles: string[]  →  role: TenantRole  (un solo rol por sesión, del claim Firebase)
-//   ecosystemId agregado (id del Ecosystem registrado en chat-ia-back)
+//   - roles: string[]  →  role: string  (un solo rol por sesión, del claim Firebase)
+//   - ecosystemId agregado  (id del Ecosystem registrado en chat-ia-back)
 //
-// Migrar usos de tenant.roles:
-//   tenant.roles.includes('admin')  →  tenant.role === 'OWNER' || tenant.role === 'ADMIN'
+// Todos los usos de tenant.roles deben migrar a tenant.role:
+//   tenant.roles.includes("admin")  →  tenant.role === "OWNER" || tenant.role === "ADMIN"
 import type { TenantRole } from '../schemas/tenant-claims.schema';
 
 export interface TenantContext {
   // ── Plataforma ──────────────────────────────────────────────────────────────
-  ecosystemId: string;          // id del Ecosystem local (Sprint 1)
+  ecosystemId: string;          // id del Ecosystem local (tabla Ecosystem de chat-ia-back)
 
   // ── Organización ────────────────────────────────────────────────────────────
-  organizationId:   string;
+  organizationId:   string;     // UUID del sass-back del ecosistema
   organizationName: string;
 
   // ── Usuario ─────────────────────────────────────────────────────────────────
@@ -25,10 +25,10 @@ export interface TenantContext {
   name:        string;
 
   // ── Autorización ─────────────────────────────────────────────────────────────
-  role:     TenantRole;
-  canRead:  boolean;
-  canWrite: boolean;
+  role:     TenantRole;         // rol dentro de la organización
+  canRead:  boolean;            // permissions.chat.canRead del token
+  canWrite: boolean;            // permissions.chat.canWrite del token
 
-  // agentId opcional — lo upsertea el TenantGuard reescrito en Sprint 2
+  // agentId se mantiene opcional — lo upsertea el guard después de Sprint 1
   agentId?: string;
 }

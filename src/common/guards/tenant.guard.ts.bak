@@ -146,8 +146,6 @@ export class TenantGuard implements CanActivate {
   ): Promise<boolean> {
     this.logger.warn(`[FALLBACK] Usando Agent local para uid: ${uid}`);
 
-    // Import dinámico para evitar circular dependency
-    const { PrismaService } = await import('../../prisma/prisma.service');
     // No podemos inyectar Prisma aquí directamente sin romper el DI,
     // así que si el dashboard no responde, rechazamos en producción
     // pero en dev permitimos continuar con el header.

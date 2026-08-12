@@ -102,6 +102,24 @@ enum NotificationType {
 }
 
 // ─────────────────────────────────────────────
+// ECOSYSTEM — plataforma multi-ecosistema (ADR-001)
+// ─────────────────────────────────────────────
+
+model Ecosystem {
+  id                String   @id @default(cuid())
+  firebaseProjectId String   @unique
+  name              String
+  isActive          Boolean  @default(true)
+  config            Json     @default("{}")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  organizations Organization[]
+
+  @@index([firebaseProjectId])
+}
+
+// ─────────────────────────────────────────────
 // ORGANIZACIÓN
 // Referencia ligera — source of truth es el owner-dashboard.
 // El ID viene del dashboard (UUID externo), no se genera localmente.
@@ -109,18 +127,21 @@ enum NotificationType {
 // ─────────────────────────────────────────────
 
 model Organization {
-  id        String   @id  // UUID del owner-dashboard — NO @default(cuid())
-  name      String
-  slug      String?  @unique
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          String   @id
+  ecosystemId String                    // ← NUEVO
+  name        String
+  slug        String?  @unique
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
+  ecosystem       Ecosystem        @relation(fields: [ecosystemId], references: [id])  // ← NUEVO
   channelAccounts ChannelAccount[]
   contacts        Contact[]
   agents          Agent[]
   projects        Project[]
 
+  @@index([ecosystemId])  // ← NUEVO
   @@index([slug])
 }
 
@@ -137,7 +158,7 @@ model Agent {
   name           String
   email          String   @unique  // agregado para upsert por email
   avatarUrl      String?
-  roles          String[] @default(["agent"])  // cacheado desde owner-dashboard
+  role   String   @default("MEMBER")  // cacheado desde owner-dashboard
   isActive       Boolean  @default(true)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt

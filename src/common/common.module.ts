@@ -4,6 +4,7 @@ import { Global, Module } from '@nestjs/common';
 import { DashboardAuthService } from './services/dashboard-auth.service';
 import { EmbeddingService }     from './services/embedding.service';
 import { CacheService }         from './services/cache.service';
+import { EcosystemModule } from '../ecosystem/ecosystem.module';
 import { GroqModule }           from '../groq/groq.module';
 
 @Global()

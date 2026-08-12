@@ -36,7 +36,6 @@ import { OrganizationsModule }  from './organizations/organizations.module';
 import { HealthModule }         from './health/health.module';
 import { AssistantModule }      from './assistant/assistant.module';
 import { WidgetModule }         from './widget/widget.module';
-import { EcosystemModule } from './ecosystem/ecosystem.module';
 import { FaqModule }            from './faq/faq.module';
 
 // Guards
@@ -76,7 +75,6 @@ import { TenantThrottlerGuard } from './common/guards/tenant-throttler.guard';
     ProjectsModule,
     AssistantModule,
     FaqModule,
-    EcosystemModule,
     WidgetModule,
   ],
   // Sin AppController ni AppService — health vive en HealthModule (/api/v1/health)
