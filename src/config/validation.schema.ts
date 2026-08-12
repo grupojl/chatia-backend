@@ -19,7 +19,6 @@ export const validationSchema = Joi.object({
 
   // ── Ecosistema SaaS ────────────────────────────────────────────────────────
   // DEPRECATED ADR-001 — eliminar en Sprint 2
-  // DASHBOARD_URL: Joi.string().uri().optional(),,
 
   // ── Firebase (compartido con owner-dashboard) ──────────────────────────────
   // Opcionales: si no están, el sistema arranca en modo dev sin auth real

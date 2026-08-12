@@ -42,12 +42,13 @@ export class TenantGuard implements CanActivate {
       }
       this.logger.warn(`[DEV] Usando modo sin Firebase — org: ${orgHeader}`);
       request.tenant = {
+        ecosystemId: 'dev',
         organizationId: orgHeader,
         organizationName: 'Dev Organization',
         firebaseUid: 'dev-uid',
         email: 'dev@localhost',
         name: 'Dev User',
-        roles: ['admin'],
+        role: 'ADMIN',
         canRead: true,
         canWrite: true,
       } satisfies TenantContext;
@@ -60,12 +61,13 @@ export class TenantGuard implements CanActivate {
       if (isDev && orgHeader) {
         this.logger.warn('[DEV] Sin Bearer token — usando x-organization-id');
         request.tenant = {
+          ecosystemId: 'dev',
           organizationId: orgHeader,
           organizationName: 'Dev Organization',
           firebaseUid: 'dev-uid',
           email: 'dev@localhost',
           name: 'Dev User',
-          roles: ['admin'],
+          role: 'ADMIN',
           canRead: true,
           canWrite: true,
         } satisfies TenantContext;
@@ -125,12 +127,13 @@ export class TenantGuard implements CanActivate {
 
     // ── 6. Poblar request.tenant ─────────────────────────────────────────────
     request.tenant = {
+      ecosystemId: 'dev', 
       organizationId: membership.id,
       organizationName: membership.name,
       firebaseUid: decoded.uid,
       email: dashboardUser.email,
       name: dashboardUser.name ?? dashboardUser.email,
-      roles,
+      role: roles[0] ?? 'MEMBER',
       canRead: chatPerms.canRead,
       canWrite: chatPerms.canWrite,
     } satisfies TenantContext;
@@ -159,12 +162,13 @@ export class TenantGuard implements CanActivate {
     }
 
     request.tenant = {
-      organizationId: orgHeader,
+      ecosystemId: 'dev',
+        organizationId: orgHeader,
       organizationName: 'Fallback Organization',
       firebaseUid: uid,
       email: `${uid}@fallback`,
       name: 'Fallback User',
-      roles: ['agent'],
+      role: 'MEMBER',
       canRead: true,
       canWrite: false,
     } satisfies TenantContext;
