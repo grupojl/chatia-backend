@@ -6,6 +6,10 @@ import { Reflector } from '@nestjs/core';
 import { ROLES_KEY } from '../decorators/roles.decorator';
 import type { TenantContext } from '../types/tenant-context';
 
+const ROLE_HIERARCHY: Record<string, number> = {
+  VIEWER: 0, MEMBER: 1, ADMIN: 2, OWNER: 3,
+};
+
 @Injectable()
 export class RolesGuard implements CanActivate {
   constructor(private readonly reflector: Reflector) {}
@@ -22,11 +26,13 @@ export class RolesGuard implements CanActivate {
     const tenant: TenantContext | undefined = request.tenant;
 
     if (!tenant?.role) {
-      throw new ForbiddenException('Sin rol asignado');
+      throw new ForbiddenException('Sin contexto de tenant');
     }
 
-    const hasRole = required.includes(tenant.role);
-    if (!hasRole) {
+    const tenantLevel  = ROLE_HIERARCHY[tenant.role.toUpperCase()] ?? -1;
+    const minRequired  = Math.min(...required.map(r => ROLE_HIERARCHY[r.toUpperCase()] ?? 99));
+
+    if (tenantLevel < minRequired) {
       throw new ForbiddenException(
         `Requiere rol: ${required.join(' o ')} — tenés: ${tenant.role}`,
       );

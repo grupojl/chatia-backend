@@ -1,5 +1,6 @@
 // src/app.module.ts
 import { Module } from '@nestjs/common';
+import { InternalModule } from './internal/internal.module';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { FirebaseModule } from './firebase/firebase.module';
@@ -74,6 +75,7 @@ import { TenantThrottlerGuard } from './common/guards/tenant-throttler.guard';
     OrganizationsModule,
     HealthModule,
     ProjectsModule,
+    InternalModule,
     AssistantModule,
     FaqModule,
     EcosystemModule,

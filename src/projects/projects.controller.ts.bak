@@ -25,7 +25,7 @@ export class ProjectsController {
 
   @Post()
   @UseGuards(WritePermissionGuard, RolesGuard)
-  @Roles('OWNER', 'ADMIN')
+  @Roles('admin')
   @ApiOperation({ summary: 'Crear proyecto (admin)' })
   @ApiResponse({ status: 201 })
   @ApiResponse({ status: 403, description: 'Sin permisos de escritura o rol admin' })
@@ -47,7 +47,7 @@ export class ProjectsController {
 
   @Put(':slug')
   @UseGuards(WritePermissionGuard, RolesGuard)
-  @Roles('OWNER', 'ADMIN')
+  @Roles('admin')
   @ApiOperation({ summary: 'Actualizar proyecto (admin)' })
   update(
     @Param('slug') slug: string,
@@ -60,7 +60,7 @@ export class ProjectsController {
   @Delete(':slug')
   @HttpCode(HttpStatus.OK)
   @UseGuards(WritePermissionGuard, RolesGuard)
-  @Roles('OWNER', 'ADMIN')
+  @Roles('admin')
   @ApiOperation({ summary: 'Eliminar proyecto (admin)' })
   remove(@Param('slug') slug: string, @Tenant() tenant: TenantContext) {
     return this.projectsService.remove(slug, tenant.organizationId);
