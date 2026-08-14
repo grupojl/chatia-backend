@@ -13,6 +13,14 @@ export class ProjectsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(organizationId: string, dto: CreateProjectDto) {
+    // Generar slug desde name si no viene en el DTO
+      dto.slug = dto.name
+        .toLowerCase()
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '')
+        .substring(0, 60);
+    }
     const existing = await this.prisma.project.findUnique({
       where: { organizationId_slug: { organizationId, slug: dto.slug } },
     });
