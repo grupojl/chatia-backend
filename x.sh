@@ -1,45 +1,125 @@
-cat > src/common/guards/roles.guard.ts << 'EOF'
-// src/common/guards/roles.guard.ts
-import {
-  Injectable, CanActivate, ExecutionContext, ForbiddenException,
-} from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
-import { ROLES_KEY } from '../decorators/roles.decorator';
-import type { TenantContext } from '../types/tenant-context';
+#!/usr/bin/env bash
+# =============================================================================
+# x.sh — Fix projects.service.ts: slug auto-generado correctamente
+# USO (desde raíz de chat-ia-lang):
+#   bash x.sh
+# =============================================================================
+set -euo pipefail
 
-const ROLE_HIERARCHY: Record<string, number> = {
-  VIEWER: 0, MEMBER: 1, ADMIN: 2, OWNER: 3,
-};
+GREEN='\033[0;32m'; CYAN='\033[0;36m'; NC='\033[0m'
+ok()      { echo -e "${GREEN}[✓]${NC} $1"; }
+section() { echo -e "\n${CYAN}━━━ $1 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"; }
+
+section "Reescribir projects.service.ts"
+
+cat > src/projects/projects.service.ts << 'EOF'
+// src/projects/projects.service.ts
+import {
+  Injectable, NotFoundException, ConflictException, Logger,
+} from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { CreateProjectDto } from './dto/create-project.dto';
+import { UpdateProjectDto } from './dto/update-project.dto';
 
 @Injectable()
-export class RolesGuard implements CanActivate {
-  constructor(private readonly reflector: Reflector) {}
+export class ProjectsService {
+  private readonly logger = new Logger(ProjectsService.name);
 
-  canActivate(context: ExecutionContext): boolean {
-    const required = this.reflector.getAllAndOverride<string[]>(ROLES_KEY, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
+  constructor(private readonly prisma: PrismaService) {}
 
-    if (!required?.length) return true;
-
-    const request = context.switchToHttp().getRequest();
-    const tenant: TenantContext | undefined = request.tenant;
-
-    if (!tenant?.role) {
-      throw new ForbiddenException('Sin contexto de tenant');
+  async create(organizationId: string, dto: CreateProjectDto) {
+    // Generar slug desde name si no viene en el DTO
+    if (!dto.slug) {
+      dto.slug = dto.name
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '')
+        .substring(0, 60);
     }
 
-    const tenantLevel  = ROLE_HIERARCHY[tenant.role.toUpperCase()] ?? -1;
-    const minRequired  = Math.min(...required.map(r => ROLE_HIERARCHY[r.toUpperCase()] ?? 99));
-
-    if (tenantLevel < minRequired) {
-      throw new ForbiddenException(
-        `Requiere rol: ${required.join(' o ')} — tenés: ${tenant.role}`,
-      );
+    const existing = await this.prisma.project.findUnique({
+      where: { organizationId_slug: { organizationId, slug: dto.slug } },
+    });
+    if (existing) {
+      throw new ConflictException(`Ya existe un proyecto con el slug "${dto.slug}"`);
     }
 
-    return true;
+    const project = await this.prisma.project.create({
+      data: { ...dto, organizationId },
+    });
+
+    this.logger.log(`Proyecto creado: ${project.id} (${project.slug})`);
+    return { success: true, data: project };
+  }
+
+  async findAll(organizationId: string) {
+    const projects = await this.prisma.project.findMany({
+      where: { organizationId },
+      include: {
+        _count: { select: { assistantConfigs: true, knowledgeBases: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    return { success: true, data: projects };
+  }
+
+  async findOne(slug: string, organizationId: string) {
+    const project = await this.prisma.project.findUnique({
+      where: { organizationId_slug: { organizationId, slug } },
+      include: {
+        assistantConfigs: {
+          select: { id: true, personaName: true, isEnabled: true, groqModel: true },
+        },
+        knowledgeBases: {
+          select: { id: true, name: true, isActive: true },
+          where: { isActive: true },
+        },
+      },
+    });
+    if (!project) throw new NotFoundException(`Proyecto "${slug}" no encontrado`);
+    return { success: true, data: project };
+  }
+
+  async findOneById(id: string, organizationId: string) {
+    const project = await this.prisma.project.findFirst({
+      where: { id, organizationId },
+    });
+    if (!project) throw new NotFoundException('Proyecto no encontrado');
+    return project;
+  }
+
+  async update(slug: string, organizationId: string, dto: UpdateProjectDto) {
+    await this.findOne(slug, organizationId);
+    if (dto.slug && dto.slug !== slug) {
+      const conflict = await this.prisma.project.findUnique({
+        where: { organizationId_slug: { organizationId, slug: dto.slug } },
+      });
+      if (conflict) throw new ConflictException(`Ya existe un proyecto con el slug "${dto.slug}"`);
+    }
+    const updated = await this.prisma.project.update({
+      where: { organizationId_slug: { organizationId, slug } },
+      data: dto,
+    });
+    return { success: true, data: updated };
+  }
+
+  async remove(slug: string, organizationId: string) {
+    await this.findOne(slug, organizationId);
+    await this.prisma.project.delete({
+      where: { organizationId_slug: { organizationId, slug } },
+    });
+    return { success: true, message: `Proyecto "${slug}" eliminado` };
   }
 }
 EOF
+
+ok "projects.service.ts reescrito"
+
+section "Próximos pasos"
+echo ""
+echo "  git add ."
+echo "  git commit -m 'fix: projects.service.ts slug auto-generado'"
+echo "  git push origin main"
+echo ""

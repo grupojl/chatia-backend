@@ -180,6 +180,12 @@ src/
   health/
     health.controller.ts
     health.module.ts
+  internal/
+    dto/
+      internal-chat.dto.ts
+    internal-api-key.guard.ts
+    internal.controller.ts
+    internal.module.ts
   langgraph/
     nodes/
       index.ts
@@ -5072,6 +5078,124 @@ import { HealthController } from './health.controller';
 export class HealthModule {}
 ```
 
+## File: src/internal/dto/internal-chat.dto.ts
+```typescript
+// src/internal/dto/internal-chat.dto.ts
+import { IsString, IsNotEmpty, IsOptional, IsEnum } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+
+export class InternalChatDto {
+  @ApiProperty({ description: 'ID de la organización (multi-tenant)' })
+  @IsString()
+  @IsNotEmpty()
+  organizationId: string;
+
+  @ApiProperty({ description: 'Slug del proyecto de chat' })
+  @IsString()
+  @IsNotEmpty()
+  projectSlug: string;
+
+  @ApiProperty({ description: 'ID del usuario final (cliente)' })
+  @IsString()
+  @IsNotEmpty()
+  userId: string;
+
+  @ApiProperty({ description: 'Mensaje del usuario' })
+  @IsString()
+  @IsNotEmpty()
+  message: string;
+
+  @ApiPropertyOptional({
+    description: 'Canal de origen',
+    enum: ['api', 'widget', 'whatsapp', 'instagram', 'messenger', 'tiktok'],
+    default: 'api',
+  })
+  @IsOptional()
+  @IsEnum(['api', 'widget', 'whatsapp', 'instagram', 'messenger', 'tiktok'])
+  channel?: string;
+}
+
+export class InternalProjectDto {
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  organizationId: string;
+
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  name: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  description?: string;
+}
+```
+
+## File: src/internal/internal-api-key.guard.ts
+```typescript
+// src/internal/internal-api-key.guard.ts
+//
+// Guard que protege /api/v1/internal/* — solo servicios internos del ecosistema.
+// Valida el header x-api-key contra CHAT_INTERNAL_API_KEY en .env.
+//
+// No usa Firebase ni TenantGuard — es una clave compartida entre microservicios.
+// Si en el futuro necesitás claves por servicio, reemplazá este guard sin
+// tocar los controllers.
+import {
+  CanActivate,
+  ExecutionContext,
+  ForbiddenException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+
+@Injectable()
+export class InternalApiKeyGuard implements CanActivate {
+  private readonly logger = new Logger(InternalApiKeyGuard.name);
+
+  constructor(private readonly config: ConfigService) {}
+
+  canActivate(ctx: ExecutionContext): boolean {
+    const req     = ctx.switchToHttp().getRequest();
+    const apiKey  = req.headers['x-api-key'] as string | undefined;
+    const valid   = this.config.get<string>('CHAT_INTERNAL_API_KEY');
+
+    if (!valid) {
+      this.logger.error('CHAT_INTERNAL_API_KEY no configurada en .env');
+      throw new ForbiddenException('Servicio no configurado para acceso interno');
+    }
+
+    if (!apiKey || apiKey !== valid) {
+      this.logger.warn(`x-api-key inválida desde ${req.ip}`);
+      throw new ForbiddenException('x-api-key inválida o ausente');
+    }
+
+    return true;
+  }
+}
+```
+
+## File: src/internal/internal.module.ts
+```typescript
+// src/internal/internal.module.ts
+import { Module }             from '@nestjs/common';
+import { InternalController } from './internal.controller';
+import { AssistantModule }    from '../assistant/assistant.module';
+import { ProjectsModule }     from '../projects/projects.module';
+
+@Module({
+  imports: [
+    AssistantModule,
+    ProjectsModule,
+  ],
+  controllers: [InternalController],
+})
+export class InternalModule {}
+```
+
 ## File: src/langgraph/nodes/index.ts
 ```typescript
 // src/langgraph/nodes/index.ts
@@ -6687,78 +6811,6 @@ import { CreateProjectDto } from './create-project.dto';
 export class UpdateProjectDto extends PartialType(CreateProjectDto) {}
 ```
 
-## File: src/projects/projects.controller.ts
-```typescript
-// src/projects/projects.controller.ts
-import {
-  Controller, Get, Post, Put, Delete,
-  Param, Body, UseGuards, HttpCode, HttpStatus,
-} from '@nestjs/common';
-import {
-  ApiTags, ApiOperation, ApiResponse, ApiBearerAuth,
-} from '@nestjs/swagger';
-import { ProjectsService } from './projects.service';
-import { CreateProjectDto } from './dto/create-project.dto';
-import { UpdateProjectDto } from './dto/update-project.dto';
-import { TenantGuard } from '../common/guards/tenant.guard';
-import { WritePermissionGuard } from '../common/guards/write-permission.guard';
-import { RolesGuard } from '../common/guards/roles.guard';
-import { Roles } from '../common/decorators/roles.decorator';
-import { Tenant } from '../common/decorators/tenant.decorator';
-import type { TenantContext } from '../common/types/tenant-context';
-
-@ApiTags('Projects')
-@ApiBearerAuth()
-@Controller('projects')
-@UseGuards(TenantGuard)
-export class ProjectsController {
-  constructor(private readonly projectsService: ProjectsService) {}
-
-  @Post()
-  @UseGuards(WritePermissionGuard, RolesGuard)
-  @Roles('admin')
-  @ApiOperation({ summary: 'Crear proyecto (admin)' })
-  @ApiResponse({ status: 201 })
-  @ApiResponse({ status: 403, description: 'Sin permisos de escritura o rol admin' })
-  create(@Tenant() tenant: TenantContext, @Body() dto: CreateProjectDto) {
-    return this.projectsService.create(tenant.organizationId, dto);
-  }
-
-  @Get()
-  @ApiOperation({ summary: 'Listar proyectos de la organización' })
-  findAll(@Tenant() tenant: TenantContext) {
-    return this.projectsService.findAll(tenant.organizationId);
-  }
-
-  @Get(':slug')
-  @ApiOperation({ summary: 'Detalle de proyecto por slug' })
-  findOne(@Param('slug') slug: string, @Tenant() tenant: TenantContext) {
-    return this.projectsService.findOne(slug, tenant.organizationId);
-  }
-
-  @Put(':slug')
-  @UseGuards(WritePermissionGuard, RolesGuard)
-  @Roles('admin')
-  @ApiOperation({ summary: 'Actualizar proyecto (admin)' })
-  update(
-    @Param('slug') slug: string,
-    @Tenant() tenant: TenantContext,
-    @Body() dto: UpdateProjectDto,
-  ) {
-    return this.projectsService.update(slug, tenant.organizationId, dto);
-  }
-
-  @Delete(':slug')
-  @HttpCode(HttpStatus.OK)
-  @UseGuards(WritePermissionGuard, RolesGuard)
-  @Roles('admin')
-  @ApiOperation({ summary: 'Eliminar proyecto (admin)' })
-  remove(@Param('slug') slug: string, @Tenant() tenant: TenantContext) {
-    return this.projectsService.remove(slug, tenant.organizationId);
-  }
-}
-```
-
 ## File: src/projects/projects.module.ts
 ```typescript
 // src/projects/projects.module.ts
@@ -6772,97 +6824,6 @@ import { ProjectsService } from './projects.service';
   exports: [ProjectsService],
 })
 export class ProjectsModule {}
-```
-
-## File: src/projects/projects.service.ts
-```typescript
-// src/projects/projects.service.ts
-import {
-  Injectable, NotFoundException, ConflictException, Logger,
-} from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
-import { CreateProjectDto } from './dto/create-project.dto';
-import { UpdateProjectDto } from './dto/update-project.dto';
-
-@Injectable()
-export class ProjectsService {
-  private readonly logger = new Logger(ProjectsService.name);
-
-  constructor(private readonly prisma: PrismaService) {}
-
-  async create(organizationId: string, dto: CreateProjectDto) {
-    const existing = await this.prisma.project.findUnique({
-      where: { organizationId_slug: { organizationId, slug: dto.slug } },
-    });
-    if (existing) {
-      throw new ConflictException(`Ya existe un proyecto con el slug "${dto.slug}"`);
-    }
-    const project = await this.prisma.project.create({
-      data: { ...dto, organizationId },
-    });
-    this.logger.log(`Proyecto creado: ${project.id} (${project.slug})`);
-    return { success: true, data: project };
-  }
-
-  async findAll(organizationId: string) {
-    const projects = await this.prisma.project.findMany({
-      where: { organizationId },
-      include: {
-        _count: { select: { assistantConfigs: true, knowledgeBases: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-    return { success: true, data: projects };
-  }
-
-  async findOne(slug: string, organizationId: string) {
-    const project = await this.prisma.project.findUnique({
-      where: { organizationId_slug: { organizationId, slug } },
-      include: {
-        assistantConfigs: {
-          select: { id: true, personaName: true, isEnabled: true, groqModel: true },
-        },
-        knowledgeBases: {
-          select: { id: true, name: true, isActive: true },
-          where: { isActive: true },
-        },
-      },
-    });
-    if (!project) throw new NotFoundException(`Proyecto "${slug}" no encontrado`);
-    return { success: true, data: project };
-  }
-
-  async findOneById(id: string, organizationId: string) {
-    const project = await this.prisma.project.findFirst({
-      where: { id, organizationId },
-    });
-    if (!project) throw new NotFoundException('Proyecto no encontrado');
-    return project;
-  }
-
-  async update(slug: string, organizationId: string, dto: UpdateProjectDto) {
-    await this.findOne(slug, organizationId);
-    if (dto.slug && dto.slug !== slug) {
-      const conflict = await this.prisma.project.findUnique({
-        where: { organizationId_slug: { organizationId, slug: dto.slug } },
-      });
-      if (conflict) throw new ConflictException(`Ya existe un proyecto con el slug "${dto.slug}"`);
-    }
-    const updated = await this.prisma.project.update({
-      where: { organizationId_slug: { organizationId, slug } },
-      data: dto,
-    });
-    return { success: true, data: updated };
-  }
-
-  async remove(slug: string, organizationId: string) {
-    await this.findOne(slug, organizationId);
-    await this.prisma.project.delete({
-      where: { organizationId_slug: { organizationId, slug } },
-    });
-    return { success: true, message: `Proyecto "${slug}" eliminado` };
-  }
-}
 ```
 
 ## File: src/queue/processors/incoming-message.processor.ts
@@ -8235,47 +8196,6 @@ export class UpdateAiConfigDto {
 }
 ```
 
-## File: src/common/guards/roles.guard.ts
-```typescript
-// src/common/guards/roles.guard.ts
-import {
-  Injectable, CanActivate, ExecutionContext, ForbiddenException,
-} from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
-import { ROLES_KEY } from '../decorators/roles.decorator';
-import type { TenantContext } from '../types/tenant-context';
-
-@Injectable()
-export class RolesGuard implements CanActivate {
-  constructor(private readonly reflector: Reflector) {}
-
-  canActivate(context: ExecutionContext): boolean {
-    const required = this.reflector.getAllAndOverride<string[]>(ROLES_KEY, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
-
-    if (!required?.length) return true;
-
-    const request = context.switchToHttp().getRequest();
-    const tenant: TenantContext | undefined = request.tenant;
-
-    if (!tenant?.role) {
-      throw new ForbiddenException('Sin rol asignado');
-    }
-
-    const hasRole = required.includes(tenant.role);
-    if (!hasRole) {
-      throw new ForbiddenException(
-        `Requiere rol: ${required.join(' o ')} — tenés: ${tenant.role}`,
-      );
-    }
-
-    return true;
-  }
-}
-```
-
 ## File: src/common/types/tenant-context.ts
 ```typescript
 // src/common/types/tenant-context.ts
@@ -9032,6 +8952,100 @@ export class KbDocumentService {
 }
 ```
 
+## File: src/internal/internal.controller.ts
+```typescript
+// src/internal/internal.controller.ts
+//
+// Endpoints consumidos por servicios internos del ecosistema.
+// Protegidos por InternalApiKeyGuard — sin Firebase, sin TenantGuard.
+//
+// Consumidores:
+//   realsass-sass-back      → POST /internal/chat, GET /internal/projects
+//   realsass-ecommerce-back → POST /internal/chat (soporte en órdenes)
+//
+// Headers requeridos en cada request:
+//   x-api-key: {CHAT_INTERNAL_API_KEY}
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
+import { ApiHeader, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { InternalApiKeyGuard }  from './internal-api-key.guard';
+import { InternalChatDto, InternalProjectDto } from './dto/internal-chat.dto';
+import { AssistantChatService } from '../assistant/chat/assistant-chat.service';
+import { ProjectsService }      from '../projects/projects.service';
+
+@ApiTags('Internal (API Key)')
+@ApiHeader({ name: 'x-api-key', description: 'Clave interna del ecosistema', required: true })
+@Controller('internal')
+@UseGuards(InternalApiKeyGuard)
+export class InternalController {
+  constructor(
+    private readonly chatService:     AssistantChatService,
+    private readonly projectsService: ProjectsService,
+  ) {}
+
+  // ── Chat ──────────────────────────────────────────────────────────────────
+
+  @Post('chat')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Enviar mensaje al asistente (server-to-server)' })
+  chat(@Body() dto: InternalChatDto) {
+    return this.chatService.chat({
+      projectSlug:    dto.projectSlug,
+      organizationId: dto.organizationId,
+      userId:         dto.userId,
+      message:        dto.message,
+      channel:        (dto.channel as any) ?? 'api',
+    });
+  }
+
+  // ── Proyectos ─────────────────────────────────────────────────────────────
+
+  @Get('projects/:organizationId')
+  @ApiOperation({ summary: 'Listar proyectos de una organización' })
+  listProjects(@Param('organizationId') organizationId: string) {
+    return this.projectsService.findAll(organizationId);
+  }
+
+  @Post('projects')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Crear proyecto para una organización' })
+  createProject(@Body() dto: InternalProjectDto) {
+    return this.projectsService.create(dto.organizationId, {
+      slug:        dto.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+      name:        dto.name,
+      description: dto.description,
+    });
+  }
+
+  @Delete('projects/:organizationId/:slug')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Eliminar proyecto' })
+  deleteProject(
+    @Param('organizationId') organizationId: string,
+    @Param('slug') slug: string,
+  ) {
+    return this.projectsService.remove(organizationId, slug);
+  }
+
+  // ── Health interno ────────────────────────────────────────────────────────
+
+  @Get('ping')
+  @ApiOperation({ summary: 'Verificar conectividad desde ecosistema' })
+  ping() {
+    return { ok: true, service: 'chat-ia', timestamp: new Date().toISOString() };
+  }
+}
+```
+
 ## File: src/organizations/organizations.service.ts
 ```typescript
 // src/organizations/organizations.service.ts
@@ -9064,6 +9078,177 @@ export class OrganizationsService {
 
   async findOne(id: string) {
     return this.prisma.organization.findUnique({ where: { id } });
+  }
+}
+```
+
+## File: src/projects/projects.controller.ts
+```typescript
+// src/projects/projects.controller.ts
+import {
+  Controller, Get, Post, Put, Delete,
+  Param, Body, UseGuards, HttpCode, HttpStatus,
+} from '@nestjs/common';
+import {
+  ApiTags, ApiOperation, ApiResponse, ApiBearerAuth,
+} from '@nestjs/swagger';
+import { ProjectsService } from './projects.service';
+import { CreateProjectDto } from './dto/create-project.dto';
+import { UpdateProjectDto } from './dto/update-project.dto';
+import { TenantGuard } from '../common/guards/tenant.guard';
+import { WritePermissionGuard } from '../common/guards/write-permission.guard';
+import { RolesGuard } from '../common/guards/roles.guard';
+import { Roles } from '../common/decorators/roles.decorator';
+import { Tenant } from '../common/decorators/tenant.decorator';
+import type { TenantContext } from '../common/types/tenant-context';
+
+@ApiTags('Projects')
+@ApiBearerAuth()
+@Controller('projects')
+@UseGuards(TenantGuard)
+export class ProjectsController {
+  constructor(private readonly projectsService: ProjectsService) {}
+
+  @Post()
+  @UseGuards(WritePermissionGuard, RolesGuard)
+  @Roles('OWNER', 'ADMIN')
+  @ApiOperation({ summary: 'Crear proyecto (admin)' })
+  @ApiResponse({ status: 201 })
+  @ApiResponse({ status: 403, description: 'Sin permisos de escritura o rol admin' })
+  create(@Tenant() tenant: TenantContext, @Body() dto: CreateProjectDto) {
+    return this.projectsService.create(tenant.organizationId, dto);
+  }
+
+  @Get()
+  @ApiOperation({ summary: 'Listar proyectos de la organización' })
+  findAll(@Tenant() tenant: TenantContext) {
+    return this.projectsService.findAll(tenant.organizationId);
+  }
+
+  @Get(':slug')
+  @ApiOperation({ summary: 'Detalle de proyecto por slug' })
+  findOne(@Param('slug') slug: string, @Tenant() tenant: TenantContext) {
+    return this.projectsService.findOne(slug, tenant.organizationId);
+  }
+
+  @Put(':slug')
+  @UseGuards(WritePermissionGuard, RolesGuard)
+  @Roles('OWNER', 'ADMIN')
+  @ApiOperation({ summary: 'Actualizar proyecto (admin)' })
+  update(
+    @Param('slug') slug: string,
+    @Tenant() tenant: TenantContext,
+    @Body() dto: UpdateProjectDto,
+  ) {
+    return this.projectsService.update(slug, tenant.organizationId, dto);
+  }
+
+  @Delete(':slug')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(WritePermissionGuard, RolesGuard)
+  @Roles('OWNER', 'ADMIN')
+  @ApiOperation({ summary: 'Eliminar proyecto (admin)' })
+  remove(@Param('slug') slug: string, @Tenant() tenant: TenantContext) {
+    return this.projectsService.remove(slug, tenant.organizationId);
+  }
+}
+```
+
+## File: src/projects/projects.service.ts
+```typescript
+// src/projects/projects.service.ts
+import {
+  Injectable, NotFoundException, ConflictException, Logger,
+} from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { CreateProjectDto } from './dto/create-project.dto';
+import { UpdateProjectDto } from './dto/update-project.dto';
+
+@Injectable()
+export class ProjectsService {
+  private readonly logger = new Logger(ProjectsService.name);
+
+  constructor(private readonly prisma: PrismaService) {}
+
+  async create(organizationId: string, dto: CreateProjectDto) {
+    // Generar slug desde name si no viene en el DTO
+      dto.slug = dto.name
+        .toLowerCase()
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '')
+        .substring(0, 60);
+    }
+    const existing = await this.prisma.project.findUnique({
+      where: { organizationId_slug: { organizationId, slug: dto.slug } },
+    });
+    if (existing) {
+      throw new ConflictException(`Ya existe un proyecto con el slug "${dto.slug}"`);
+    }
+    const project = await this.prisma.project.create({
+      data: { ...dto, organizationId },
+    });
+    this.logger.log(`Proyecto creado: ${project.id} (${project.slug})`);
+    return { success: true, data: project };
+  }
+
+  async findAll(organizationId: string) {
+    const projects = await this.prisma.project.findMany({
+      where: { organizationId },
+      include: {
+        _count: { select: { assistantConfigs: true, knowledgeBases: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    return { success: true, data: projects };
+  }
+
+  async findOne(slug: string, organizationId: string) {
+    const project = await this.prisma.project.findUnique({
+      where: { organizationId_slug: { organizationId, slug } },
+      include: {
+        assistantConfigs: {
+          select: { id: true, personaName: true, isEnabled: true, groqModel: true },
+        },
+        knowledgeBases: {
+          select: { id: true, name: true, isActive: true },
+          where: { isActive: true },
+        },
+      },
+    });
+    if (!project) throw new NotFoundException(`Proyecto "${slug}" no encontrado`);
+    return { success: true, data: project };
+  }
+
+  async findOneById(id: string, organizationId: string) {
+    const project = await this.prisma.project.findFirst({
+      where: { id, organizationId },
+    });
+    if (!project) throw new NotFoundException('Proyecto no encontrado');
+    return project;
+  }
+
+  async update(slug: string, organizationId: string, dto: UpdateProjectDto) {
+    await this.findOne(slug, organizationId);
+    if (dto.slug && dto.slug !== slug) {
+      const conflict = await this.prisma.project.findUnique({
+        where: { organizationId_slug: { organizationId, slug: dto.slug } },
+      });
+      if (conflict) throw new ConflictException(`Ya existe un proyecto con el slug "${dto.slug}"`);
+    }
+    const updated = await this.prisma.project.update({
+      where: { organizationId_slug: { organizationId, slug } },
+      data: dto,
+    });
+    return { success: true, data: updated };
+  }
+
+  async remove(slug: string, organizationId: string) {
+    await this.findOne(slug, organizationId);
+    await this.prisma.project.delete({
+      where: { organizationId_slug: { organizationId, slug } },
+    });
+    return { success: true, message: `Proyecto "${slug}" eliminado` };
   }
 }
 ```
@@ -9201,6 +9386,53 @@ const REDIS_ENABLED = process.env['REDIS_ENABLED'] === 'true';
   exports: [AssistantChatService, AssistantConfigService, AssistantSessionService],
 })
 export class AssistantModule {}
+```
+
+## File: src/common/guards/roles.guard.ts
+```typescript
+// src/common/guards/roles.guard.ts
+import {
+  Injectable, CanActivate, ExecutionContext, ForbiddenException,
+} from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import { ROLES_KEY } from '../decorators/roles.decorator';
+import type { TenantContext } from '../types/tenant-context';
+
+const ROLE_HIERARCHY: Record<string, number> = {
+  VIEWER: 0, MEMBER: 1, ADMIN: 2, OWNER: 3,
+};
+
+@Injectable()
+export class RolesGuard implements CanActivate {
+  constructor(private readonly reflector: Reflector) {}
+
+  canActivate(context: ExecutionContext): boolean {
+    const required = this.reflector.getAllAndOverride<string[]>(ROLES_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+
+    if (!required?.length) return true;
+
+    const request = context.switchToHttp().getRequest();
+    const tenant: TenantContext | undefined = request.tenant;
+
+    if (!tenant?.role) {
+      throw new ForbiddenException('Sin contexto de tenant');
+    }
+
+    const tenantLevel  = ROLE_HIERARCHY[tenant.role.toUpperCase()] ?? -1;
+    const minRequired  = Math.min(...required.map(r => ROLE_HIERARCHY[r.toUpperCase()] ?? 99));
+
+    if (tenantLevel < minRequired) {
+      throw new ForbiddenException(
+        `Requiere rol: ${required.join(' o ')} — tenés: ${tenant.role}`,
+      );
+    }
+
+    return true;
+  }
+}
 ```
 
 ## File: src/common/guards/tenant.guard.ts
@@ -9524,97 +9756,6 @@ const REDIS_ENABLED = process.env['REDIS_ENABLED'] === 'true';
 export class WebhooksModule {}
 ```
 
-## File: src/app.module.ts
-```typescript
-// src/app.module.ts
-import { Module } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
-import { ThrottlerModule } from '@nestjs/throttler';
-import { FirebaseModule } from './firebase/firebase.module';
-import { ConfigModule } from '@nestjs/config';
-
-// Infraestructura
-import { AgentsModule } from './agents/agents.module';
-import { PrismaModule } from './prisma/prisma.module';
-import { QueueModule } from './queue/queue.module';
-import { EventsModule } from './events/events.module';
-
-// Config tipada + validación
-import {
-  appConfig, dbConfig, groqConfig,
-  redisConfig, metaConfig, firebaseConfig,
-} from './config/app.config';
-import { validationSchema } from './config/validation.schema';
-
-// Módulos de dominio
-import { ChannelsModule }       from './channels/channel.module';
-import { GroqModule }           from './groq/groq.module';
-import { LangGraphModule }      from './langgraph/langgraph.module';
-import { ConversationsModule }  from './conversations/conversations.module';
-import { WebhooksModule }       from './webhooks/webhooks.module';
-import { MessagesModule }       from './messages/messages.module';
-import { ContactsModule }       from './contacts/contacts.module';
-import { AiConfigModule }       from './ai-config/ai-config.module';
-import { ChannelAccountsModule } from './channel-accounts/channel-accounts.module';
-import { NotificationsModule }  from './notifications/notifications.module';
-import { AnalyticsModule }      from './analytics/analytics.module';
-import { ProjectsModule }       from './projects/projects.module';
-import { CommonModule }         from './common/common.module';
-import { OrganizationsModule }  from './organizations/organizations.module';
-import { HealthModule }         from './health/health.module';
-import { AssistantModule }      from './assistant/assistant.module';
-import { WidgetModule }         from './widget/widget.module';
-import { EcosystemModule } from './ecosystem/ecosystem.module';
-import { FaqModule }            from './faq/faq.module';
-
-// Guards
-import { TenantThrottlerGuard } from './common/guards/tenant-throttler.guard';
-
-@Module({
-  imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      load: [appConfig, dbConfig, groqConfig, redisConfig, metaConfig, firebaseConfig],
-      validationSchema,
-      validationOptions: { abortEarly: false },
-    }),
-    ThrottlerModule.forRoot([
-      { name: 'default', ttl: 60_000, limit: 60 },
-      { name: 'burst',   ttl: 5_000,  limit: 20 },
-    ]),
-    PrismaModule,
-    FirebaseModule,
-    AgentsModule,
-    QueueModule,
-    EventsModule,
-    ChannelsModule,
-    GroqModule,
-    LangGraphModule,
-    ConversationsModule,
-    WebhooksModule,
-    MessagesModule,
-    ContactsModule,
-    AiConfigModule,
-    ChannelAccountsModule,
-    NotificationsModule,
-    AnalyticsModule,
-    CommonModule,
-    OrganizationsModule,
-    HealthModule,
-    ProjectsModule,
-    AssistantModule,
-    FaqModule,
-    EcosystemModule,
-    WidgetModule,
-  ],
-  // Sin AppController ni AppService — health vive en HealthModule (/api/v1/health)
-  providers: [
-    { provide: APP_GUARD, useClass: TenantThrottlerGuard },
-  ],
-})
-export class AppModule {}
-```
-
 ## File: src/common/services/cache.service.ts
 ```typescript
 // src/common/services/cache.service.ts
@@ -9706,25 +9847,6 @@ export class CacheService {
 }
 ```
 
-## File: src/common/common.module.ts
-```typescript
-// src/common/common.module.ts
-// Módulo que exporta servicios comunes utilizados por guards y módulos de negocio.
-import { Global, Module } from '@nestjs/common';
-import { EmbeddingService }     from './services/embedding.service';
-import { CacheService }         from './services/cache.service';
-import { EcosystemModule } from '../ecosystem/ecosystem.module';
-import { GroqModule }           from '../groq/groq.module';
-
-@Global()
-@Module({
-  imports: [GroqModule],
-  providers: [EmbeddingService, CacheService],
-  exports:   [EmbeddingService, CacheService],
-})
-export class CommonModule {}
-```
-
 ## File: src/queue/queue.module.ts
 ```typescript
 // src/queue/queue.module.ts
@@ -9757,6 +9879,123 @@ const REDIS_URL     = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
   exports:   REDIS_ENABLED ? [BullModule] : [],
 })
 export class QueueModule {}
+```
+
+## File: src/app.module.ts
+```typescript
+// src/app.module.ts
+import { Module } from '@nestjs/common';
+import { InternalModule } from './internal/internal.module';
+import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { FirebaseModule } from './firebase/firebase.module';
+import { ConfigModule } from '@nestjs/config';
+
+// Infraestructura
+import { AgentsModule } from './agents/agents.module';
+import { PrismaModule } from './prisma/prisma.module';
+import { QueueModule } from './queue/queue.module';
+import { EventsModule } from './events/events.module';
+
+// Config tipada + validación
+import {
+  appConfig, dbConfig, groqConfig,
+  redisConfig, metaConfig, firebaseConfig,
+} from './config/app.config';
+import { validationSchema } from './config/validation.schema';
+
+// Módulos de dominio
+import { ChannelsModule }       from './channels/channel.module';
+import { GroqModule }           from './groq/groq.module';
+import { LangGraphModule }      from './langgraph/langgraph.module';
+import { ConversationsModule }  from './conversations/conversations.module';
+import { WebhooksModule }       from './webhooks/webhooks.module';
+import { MessagesModule }       from './messages/messages.module';
+import { ContactsModule }       from './contacts/contacts.module';
+import { AiConfigModule }       from './ai-config/ai-config.module';
+import { ChannelAccountsModule } from './channel-accounts/channel-accounts.module';
+import { NotificationsModule }  from './notifications/notifications.module';
+import { AnalyticsModule }      from './analytics/analytics.module';
+import { ProjectsModule }       from './projects/projects.module';
+import { CommonModule }         from './common/common.module';
+import { OrganizationsModule }  from './organizations/organizations.module';
+import { HealthModule }         from './health/health.module';
+import { AssistantModule }      from './assistant/assistant.module';
+import { WidgetModule }         from './widget/widget.module';
+import { EcosystemModule } from './ecosystem/ecosystem.module';
+import { FaqModule }            from './faq/faq.module';
+
+// Guards
+import { TenantThrottlerGuard } from './common/guards/tenant-throttler.guard';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+      load: [appConfig, dbConfig, groqConfig, redisConfig, metaConfig, firebaseConfig],
+      validationSchema,
+      validationOptions: { abortEarly: false },
+    }),
+    ThrottlerModule.forRoot([
+      { name: 'default', ttl: 60_000, limit: 60 },
+      { name: 'burst',   ttl: 5_000,  limit: 20 },
+    ]),
+    PrismaModule,
+    FirebaseModule,
+    AgentsModule,
+    QueueModule,
+    EventsModule,
+    ChannelsModule,
+    GroqModule,
+    LangGraphModule,
+    ConversationsModule,
+    WebhooksModule,
+    MessagesModule,
+    ContactsModule,
+    AiConfigModule,
+    ChannelAccountsModule,
+    NotificationsModule,
+    AnalyticsModule,
+    CommonModule,
+    OrganizationsModule,
+    HealthModule,
+    ProjectsModule,
+    InternalModule,
+    AssistantModule,
+    FaqModule,
+    EcosystemModule,
+    WidgetModule,
+  ],
+  // Sin AppController ni AppService — health vive en HealthModule (/api/v1/health)
+  providers: [
+    { provide: APP_GUARD, useClass: TenantThrottlerGuard },
+  ],
+})
+export class AppModule {}
+```
+
+## File: src/common/common.module.ts
+```typescript
+// src/common/common.module.ts
+//
+// Módulo global — exporta servicios comunes y EcosystemModule.
+// Al ser @Global() + exportar EcosystemModule, EcosystemService queda
+// disponible en TODOS los módulos sin necesidad de importarlo individualmente.
+// Esto es necesario porque TenantGuard inyecta EcosystemService y se usa
+// en controllers de múltiples módulos.
+import { Global, Module } from '@nestjs/common';
+import { EmbeddingService } from './services/embedding.service';
+import { CacheService }     from './services/cache.service';
+import { EcosystemModule }  from '../ecosystem/ecosystem.module';
+import { GroqModule }       from '../groq/groq.module';
+
+@Global()
+@Module({
+  imports:   [GroqModule, EcosystemModule],
+  providers: [EmbeddingService, CacheService],
+  exports:   [EmbeddingService, CacheService, EcosystemModule],
+})
+export class CommonModule {}
 ```
 
 ## File: package.json

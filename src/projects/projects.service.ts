@@ -14,22 +14,27 @@ export class ProjectsService {
 
   async create(organizationId: string, dto: CreateProjectDto) {
     // Generar slug desde name si no viene en el DTO
+    if (!dto.slug) {
       dto.slug = dto.name
         .toLowerCase()
-        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-|-$/g, '')
         .substring(0, 60);
     }
+
     const existing = await this.prisma.project.findUnique({
       where: { organizationId_slug: { organizationId, slug: dto.slug } },
     });
     if (existing) {
       throw new ConflictException(`Ya existe un proyecto con el slug "${dto.slug}"`);
     }
+
     const project = await this.prisma.project.create({
       data: { ...dto, organizationId },
     });
+
     this.logger.log(`Proyecto creado: ${project.id} (${project.slug})`);
     return { success: true, data: project };
   }
