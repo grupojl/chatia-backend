@@ -64,6 +64,7 @@ export class InternalController {
   @ApiOperation({ summary: 'Crear proyecto para una organización' })
   createProject(@Body() dto: InternalProjectDto) {
     return this.projectsService.create(dto.organizationId, {
+      slug:        dto.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
       name:        dto.name,
       description: dto.description,
     });
