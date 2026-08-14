@@ -253,3 +253,10 @@ GROQ_MODELS.MIXTRAL            // 'mixtral-8x7b-32768'        — contexto largo
 - El `accessToken` de Meta se guarda en texto plano en la DB. Para producción, considerá encriptarlo con `crypto` antes de guardar (AES-256).
 - La firma HMAC del webhook de Meta se verifica automáticamente si `META_APP_SECRET` está configurado.
 - Los tokens de verificación del webhook se rotan con `POST /whatsapp-accounts/:id/rotate-token`.
+
+
+curl -s -X POST https://chatia-backend-production.up.railway.app/api/v1/projects \
+  -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IjI3YzQ1NTQ4NTU1NTYxOTYwZjQ5MWQ1MDYzOWU1NTY1N2IyMTJhYmMiLCJ0eXAiOiJKV1QifQ.eyJuYW1lIjoiQWd1c3RpbiBKYWxpbCBsZW9uIiwicGljdHVyZSI6Imh0dHBzOi8vbGgzLmdvb2dsZXVzZXJjb250ZW50LmNvbS9hL0FDZzhvY0lsZUVFOXVsZEZDcmFWQ1prVi16VXRhYjRsN3duZjJwaTUyQzVEQmJ0RklkQWMxc1V4PXM5Ni1jIiwib3JnYW5pemF0aW9uSWQiOiJmOGE1YzE0NS02MDU4LTRmY2QtOGM0Mi0zMGY5YjRlMGM3OTIiLCJvcmdhbml6YXRpb25OYW1lIjoidGVzdCIsIm9yZ2FuaXphdGlvblNsdWciOiJvcmctYTdmODU5NWUiLCJyb2xlIjoiT1dORVIiLCJwZXJtaXNzaW9ucyI6eyJjaGF0Ijp7ImNhblJlYWQiOnRydWUsImNhbldyaXRlIjp0cnVlfX0sImlzcyI6Imh0dHBzOi8vc2VjdXJldG9rZW4uZ29vZ2xlLmNvbS9yZWFsLXNhc3MiLCJhdWQiOiJyZWFsLXNhc3MiLCJhdXRoX3RpbWUiOjE3ODY3MzY0OTUsInVzZXJfaWQiOiJLVXBYTGl4YTU2Y3Q2MTdJUDB0NHJ3VmVVUHgyIiwic3ViIjoiS1VwWExpeGE1NmN0NjE3SVAwdDRyd1ZlVVB4MiIsImlhdCI6MTc4NjczNjQ5NiwiZXhwIjoxNzg2NzQwMDk2LCJlbWFpbCI6ImFndXN0aW5qYWxpbGxlb25AZ21haWwuY29tIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImZpcmViYXNlIjp7ImlkZW50aXRpZXMiOnsiZ29vZ2xlLmNvbSI6WyIxMDQyMTA4MTA2NzUwMTkxNjE4NDQiXSwiZW1haWwiOlsiYWd1c3RpbmphbGlsbGVvbkBnbWFpbC5jb20iXX0sInNpZ25faW5fcHJvdmlkZXIiOiJnb29nbGUuY29tIn19.cHViHam1QjcCIQdX0dWPzBHTIW8xTH0DxrVF_j4UKkLkCsbzAni9V2L72p6EmiPpryIKpT4CLFNxETx82ygqqyKfxiId_iV5djd2hHyLclzFh8tJ6C0JX62LqvnUW4Su6RDcd2QGw2jdEqiCBS_ohTcyW_5ZbyIWSfvop-8DYni2MBH3tKkyZ6-YZzD2T2qj8V3vZRpeZBUX89aGurYo448rP61mkIb1JYhuH59ziOIRlzbJINkZbNdVj1wWLakHEKgmRSbpmA7rgVkZRCVqvMt5Xy2lps4k5xNhuMkYDyXMjLKSM8U7PbO4KiM5wR8gx5fz8aIyMk1kjss_k04CZw" \
+  -H "x-organization-id: f8a5c145-6058-4fcd-8c42-30f9b4e0c792" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Mi primer proyecto","description":"Asistente del ecosistema"}'
