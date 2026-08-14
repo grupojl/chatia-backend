@@ -32,7 +32,7 @@ export class ProjectsService {
     }
 
     const project = await this.prisma.project.create({
-      data: { ...dto, organizationId },
+      data: { ...dto, slug: dto.slug!, organizationId },
     });
 
     this.logger.log(`Proyecto creado: ${project.id} (${project.slug})`);
